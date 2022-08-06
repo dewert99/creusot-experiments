@@ -12,14 +12,14 @@ use crate::p_map::*;
 /// At most one [`GhostToken`] has permission to each [`GhostPtr`]
 /// No [`GhostToken`] has permission to a dangling [`GhostPtr`]
 #[trusted] // Means opaque in this context
-pub struct GhostToken<T>(PhantomData<T>);
+pub struct GhostToken<T: ?Sized>(PhantomData<T>);
 
 /// Thin wrapper over a raw pointer managed by a [`GhostPtr`]
-pub struct GhostPtr<T>(*mut T);
+pub struct GhostPtr<T: ?Sized>(*mut T);
 
-impl<T> Copy for GhostPtr<T> {}
+impl<T: ?Sized> Copy for GhostPtr<T> {}
 
-impl<T> Clone for GhostPtr<T> {
+impl<T: ?Sized> Clone for GhostPtr<T> {
     #[ensures(result == *self)]
     fn clone(&self) -> Self {
         *self
@@ -27,7 +27,7 @@ impl<T> Clone for GhostPtr<T> {
 }
 
 
-impl<T> Model for GhostToken<T> {
+impl<T: ?Sized> Model for GhostToken<T> {
     type ModelTy = PMap<GhostPtr<T>, T>;
 
     #[trusted]
@@ -37,7 +37,7 @@ impl<T> Model for GhostToken<T> {
     }
 }
 
-impl<T> GhostToken<T> {
+impl<T: ?Sized> GhostToken<T> {
     /// Creates a new [`GhostPtr`] that has no permission
     #[trusted]
     #[ensures(@result == PMap::empty())]
@@ -60,12 +60,10 @@ impl<T> GhostToken<T> {
 impl<T> GhostPtr<T> {
     /// Creates a [`GhostPtr`] with initial value `val` and gives `t` permission to it
     // Safety this pointer was newly allocated no other GhostToken could have permission to it
-    #[trusted]
-    #[ensures(!(@*t).contains(result))]
+    #[ensures(! (@*t).contains(result))]
     #[ensures(@^t == (@*t).insert(result, val))]
     pub fn new_in(val: T, t: &mut GhostToken<T>) -> Self {
-        let ptr = Box::into_raw(Box::new(val));
-        unsafe {GhostPtr(ptr)}
+        Self::from_box_in(Box::new(val), t)
     }
 
     #[ensures(@(result.1) == PMap::empty().insert(result.0, val))]
@@ -80,6 +78,28 @@ impl<T> GhostPtr<T> {
     #[ensures(result == Self::null_logic())]
     pub fn null() -> Self {
         GhostPtr(ptr::null_mut())
+    }
+
+    /// Deallocates `self` and returns its stored value
+    // Safety `self` is now dangling but since `t` doesn't have permission anymore no token does so this is okay
+    #[requires((@*t).contains(self))]
+    #[ensures(result == (@*t).lookup(self))]
+    #[ensures((@^t) == (@*t).remove(self))]
+    pub fn take(self, t: &mut GhostToken<T>) -> T {
+        *self.take_box(t)
+    }
+}
+
+impl<T: ?Sized> GhostPtr<T> {
+
+    /// Creates a [`GhostPtr`] with initial value `val` and gives `t` permission to it
+    // Safety this pointer was newly allocated no other GhostToken could have permission to it
+    #[trusted]
+    #[ensures(!(@*t).contains(result))]
+    #[ensures(@^t == (@*t).insert(result, *val))]
+    pub fn from_box_in(val: Box<T>, t: &mut GhostToken<T>) -> Self {
+        let ptr = Box::into_raw(val);
+        unsafe { GhostPtr(ptr) }
     }
 
     /// Check if `self` was created with [`GhostPtr::null`]
@@ -101,7 +121,7 @@ impl<T> GhostPtr<T> {
     // `t` cannot be used to mutably borrow `self` as long as the shared lifetime lasts
     #[trusted]
     #[requires((@t).contains(self))]
-    #[ensures(*result == (@t).lookup(self))]
+    #[ensures(*result == *(@t).lookup_ghost(self))]
     pub fn borrow(self, t: &GhostToken<T>) -> &T {
         unsafe {&*self.0 }
     }
@@ -112,7 +132,7 @@ impl<T> GhostPtr<T> {
     // The returned token doesn't have access to `self` so it can't access it either
     #[trusted]
     #[requires((@**t).contains(self))]
-    #[ensures(*result == (@**t).lookup(self))]
+    #[ensures(*result == *(@**t).lookup_ghost(self))]
     #[ensures(@*^t == (@**t).remove(self))]
     #[ensures(@^*t == (@^^t).insert(self, ^result))]
     pub fn reborrow<'o, 'i>(self, t: &'o mut &'i mut GhostToken<T>) -> &'i mut T {
@@ -122,27 +142,17 @@ impl<T> GhostPtr<T> {
 
     #[trusted] // shouldn't be needed
     #[requires((@*t).contains(self))]
-    #[ensures(*result == (@*t).lookup(self))]
+    #[ensures(*result == *(@*t).lookup_ghost(self))]
     #[ensures(@^t == (@*t).insert(self, ^result))]
     pub fn borrow_mut(self, t: &mut GhostToken<T>) -> &mut T {
         let mut t = t;
         self.reborrow(&mut t)
     }
 
-    /// Deallocates `self` and returns its stored value
-    // Safety `self` is now dangling but since `t` doesn't have permission anymore no token does so this is okay
-    #[trusted]
-    #[requires((@*t).contains(self))]
-    #[ensures(result == (@*t).lookup(self))]
-    #[ensures((@^t) == (@*t).remove(self))]
-    pub fn take(self, t: &mut GhostToken<T>) -> T {
-        unsafe { *Box::from_raw(self.0) }
-    }
-
     #[trusted]
     #[requires((@*t1).contains(self))]
     #[ensures(@^t1 == (@^t1).remove(self))]
-    #[ensures(@^t2 == (@^t2).insert(self, (@*t1).lookup(self)))]
+    #[ensures(@^t2 == (@^t2).insert(self, *(@*t1).lookup_ghost(self)))]
     pub fn transfer(self, t1: &mut GhostToken<T>, t2: &mut GhostToken<T>) {}
 
     #[trusted]
@@ -155,7 +165,17 @@ impl<T> GhostPtr<T> {
     #[trusted]
     #[ensures(@result == self.addr_logic())]
     pub fn addr(self) -> usize {
-        self.0 as usize
+        self.0.to_raw_parts().0 as usize
+    }
+
+    /// Deallocates `self` and returns its stored value
+    // Safety `self` is now dangling but since `t` doesn't have permission anymore no token does so this is okay
+    #[trusted]
+    #[requires((@*t).contains(self))]
+    #[ensures(*result == *(@*t).lookup_ghost(self))]
+    #[ensures((@^t) == (@*t).remove(self))]
+    pub fn take_box(self, t: &mut GhostToken<T>) -> Box<T> {
+        unsafe { Box::from_raw(self.0) }
     }
 }
 

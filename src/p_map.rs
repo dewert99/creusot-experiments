@@ -1,24 +1,32 @@
 use creusot_contracts::*;
 use super::helpers::*;
 
-pub struct PMap<K, V>(pub Mapping<K, Option<V>>);
+pub struct PMap<K, V: ?Sized>(pub Mapping<K, Option<Ghost<V>>>);
 
 #[trusted]
 #[logic]
 #[requires(forall<k: K> m.0.get(k) == None)]
 #[ensures(result)]
 #[ensures(result ==> m.len() == 0)]
-fn len_def0<K, V>(m: PMap<K, V>) -> bool {true}
+fn len_def0<K, V: ?Sized>(m: PMap<K, V>) -> bool {true}
 
 #[trusted]
 #[logic]
 #[requires(m.0.get(k) != None)]
 #[ensures(result)]
 #[ensures(result ==> m.len() == PMap(m.0.set(k, None)).len() + 1)]
-fn len_def1<K, V>(m: PMap<K, V>, k: K) -> bool {true}
+fn len_def1<K, V: ?Sized>(m: PMap<K, V>, k: K) -> bool {true}
 
 
-impl<K, V> PMap<K, V> {
+#[trusted]
+#[logic]
+#[creusot::builtins = "ghost_new"]
+fn new_ghost<T: ?Sized>(t: T) -> Ghost<T> {
+    absurd
+}
+
+
+impl<K, V: ?Sized> PMap<K, V> {
     #[trusted]
     #[logic]
     #[ensures(result >= 0)]
@@ -30,8 +38,8 @@ impl<K, V> PMap<K, V> {
     #[ensures(self.contains(k) ==> result.len() == self.len())]
     #[ensures(!self.contains(k) ==> result.len() == self.len() + 1)]
     pub fn insert(self, k: K, v: V) -> Self {
-        PMap(self.0.set(k, Some(v))).remove(k).ext_eq(self.remove(k));
-        PMap(self.0.set(k, Some(v)))
+        PMap(self.0.set(k, Some(new_ghost(v)))).remove(k).ext_eq(self.remove(k));
+        PMap(self.0.set(k, Some(new_ghost(v))))
     }
 
     #[logic]
@@ -43,13 +51,19 @@ impl<K, V> PMap<K, V> {
 
     #[logic]
     #[why3::attr = "inline:trivial"]
-    pub fn get(self, k: K) -> Option<V> {
+    pub fn get(self, k: K) -> Option<Ghost<V>>{
         self.0.get(k)
     }
 
     #[logic]
-    pub fn lookup(self, k: K) -> V {
+    pub fn lookup_ghost(self, k: K) -> Ghost<V> {
         unwrap(self.0.get(k))
+    }
+
+    #[logic]
+    pub fn lookup(self, k: K) -> V
+        where V: Sized{
+        *unwrap(self.0.get(k))
     }
 
     #[logic]
@@ -85,13 +99,13 @@ impl<K, V> PMap<K, V> {
     #[logic]
     #[requires(self.disjoint(other))]
     #[ensures(forall<k: K>
-        result.get(k) == if self.contains(k) {
-            self.get(k)
-        } else if other.contains(k) {
-            other.get(k)
-        } else {
-            None
-        })]
+    result.get(k) == if self.contains(k) {
+    self.get(k)
+    } else if other.contains(k) {
+    other.get(k)
+    } else {
+    None
+    })]
     #[ensures(result.len() == self.len() + other.len())]
     pub fn union(self, other: Self) -> Self {
         absurd
