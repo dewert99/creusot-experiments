@@ -162,7 +162,7 @@ fn test1() {
 
 fn test2() {
     let mut x = CPair(true, 0);
-    let yr = transmute::<_,MutTFn<CPairTFn<IdTFn, NonZeroTFn>>>(&mut x); // Should fail
+    // let yr = transmute::<_,MutTFn<CPairTFn<IdTFn, NonZeroTFn>>>(&mut x); // Should fail
 }
 
 #[ensures((^x).0 == false)]
@@ -181,5 +181,5 @@ fn test3() {
 fn test4() {
     let x = CPair(true, 1);
     let mut x = transmute::<_,CPairTFn<IdTFn, NonZeroTFn>>(x);
-    let yr: &mut CPair<bool, u32> = transmute::<_,MutTFn<CPairTFn<IdTFn, NonZeroTFn>>>(&mut x); //should fail
+    // let yr: &mut CPair<bool, u32> = transmute::<_,MutTFn<CPairTFn<IdTFn, NonZeroTFn>>>(&mut x); //should fail
 }
