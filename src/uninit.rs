@@ -108,15 +108,4 @@ impl<T> MaybeUninit<T> {
         #[allow(unused_must_use)]
         mem::replace(self, Self::new(t));
     }
-
-    #[trusted]
-    #[ensures((@result).len() == @len)]
-    #[ensures(forall<i: Int> 0 <= i && i < @len ==> !(@result)[i].is_init())]
-    pub fn box_new_slice(len: usize) -> Box<[MaybeUninit<T>]> {
-        unsafe {
-            let r_ptr = alloc(Layout::array::<MaybeUninit<T>>(len).unwrap());
-            let s_ptr = slice_from_raw_parts_mut(r_ptr as *mut MaybeUninit<T>, len);
-            Box::from_raw(s_ptr)
-        }
-    }
 }
