@@ -109,3 +109,15 @@ impl<T> MaybeUninit<T> {
         mem::replace(self, Self::new(t));
     }
 }
+
+#[trusted]
+#[requires((@src).len() == (@dst).len())]
+#[requires(forall<i: Int> 0 <= i && i < (@dst).len() ==> !(@dst)[i].is_init())]
+#[ensures(@^src == @*dst)]
+#[ensures(@^dst == @*src)]
+pub fn memcpy<T>(src: &mut [MaybeUninit<T>], dst: &mut [MaybeUninit<T>]) {
+    let count = src.len();
+    let src = src as *const _ as *const T;
+    let dst = dst as *mut _ as *mut T;
+    unsafe {::std::ptr::copy_nonoverlapping(src, dst, count)}
+}

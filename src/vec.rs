@@ -2,7 +2,7 @@ use creusot_contracts::*;
 use ::std::ops::{Deref, DerefMut};
 use crate::head_dst::{new_uninit_box_slice, realloc_box_slice};
 use crate::transmute::{ArrTFn, BoxTFn, MutTFn, RefTFn, transmute, TransmuteFn};
-use crate::uninit::{AssumeInitTFn, MaybeUninit, MaybeUninitTFn};
+use crate::uninit::{AssumeInitTFn, MaybeUninit, MaybeUninitTFn, memcpy};
 
 struct Vec<T>{
     len: usize,
@@ -33,6 +33,17 @@ impl<T> Vec<T> {
         Vec{len: 0, data}
     }
 
+    #[requires(self.invariant())]
+    #[ensures(result.0 == self.len)]
+    #[ensures(result.1 == self.data)]
+    #[ensures(Vec{len: result.0, data: result.1}.invariant())]
+    pub fn into_raw_parts(self) -> (usize, Box<[MaybeUninit<T>]>) {
+        let mut me = self;
+        let mut dummy = new_uninit_box_slice(0); // todo replace with Box::new([])
+        let data = ::std::mem::replace(&mut me.data,dummy);
+        (me.len, data)
+    }
+
     #[requires((*self).invariant())]
     #[ensures((^self).len == (*self).len)]
     #[ensures((^self).data.model().len() >= @new_cap)]
@@ -51,6 +62,23 @@ impl<T> Vec<T> {
         proof_assert!(forall<i: Int> @len <= i && i < old_data.len() ==> (@data)[i] == old_data[i]);
         proof_assert!(forall<i: Int> @len <= i && i < old_data.len() ==> !(@data)[i].is_init());
         proof_assert!(forall<i: Int> @len <= i && i < (@data).len() ==> !(@data)[i].is_init());
+    }
+
+    #[requires((*self).invariant())]
+    #[requires((@(*self).len + @new_elems) * 2 <= @usize::MAX)]
+    #[ensures((^self).len == (*self).len)]
+    #[ensures((^self).data.model().len() >= @(*self).len + @new_elems)]
+    #[ensures((^self).data.model().len() >= (*self).data.model().len())]
+    #[ensures((^self).data.model().subsequence(0, (*self).data.model().len()) == (*self).data.model())]
+    #[ensures((^self).invariant())]
+    pub fn reserve(&mut self, new_elems: usize) {
+        let mut new_cap = self.data.len();
+        let target = self.len + new_elems;
+        proof_assert!(@target * 2 <= @usize::MAX);
+        while new_cap < target {
+            new_cap *= 2
+        }
+        self.reserve_exact(new_cap)
     }
 
     #[requires((*self).invariant())]
@@ -92,15 +120,34 @@ impl<T> Vec<T> {
         }
     }
 
+    #[requires((@self.len + (@src).len()) * 2 <= @usize::MAX)]
+    #[requires(forall<i: Int> 0 <= i && i < (@*src).len() ==> (@*src)[i].is_init())]
     #[requires(self.invariant())]
-    #[ensures(result.0 == self.len)]
-    #[ensures(result.1 == self.data)]
-    #[ensures(Vec{len: result.0, data: result.1}.invariant())]
-    pub fn into_raw_parts(self) -> (usize, Box<[MaybeUninit<T>]>) {
-        let mut me = self;
-        let mut dummy = new_uninit_box_slice(0); // todo replace with Box::new([])
-        let data = ::std::mem::replace(&mut me.data,dummy);
-        (me.len, data)
+    #[ensures((^self).invariant())]
+    #[ensures(@(^self).len == @(*self).len + (@src).len())]
+    #[ensures(forall<i: Int> 0 <= i && i < (@^src).len() ==>  !(@^src)[i].is_init())]
+    pub fn extend_from_maybe_uninit(&mut self, src: &mut [MaybeUninit<T>]) {
+        self.reserve(src.len());
+        let Vec{data, len} = self;
+        let old_len = *len;
+        *len += src.len();
+        let dst = &mut data[old_len..*len];
+        proof_assert!(forall<i: Int> @old_len <= i && i < @len ==> (@^data)[i] == (@^dst)[i - @old_len]);
+        memcpy(src, dst);
+    }
+
+    #[requires((@self.len + @other.len) * 2 <= @usize::MAX)]
+    #[requires(self.invariant())]
+    #[requires(other.invariant())]
+    #[ensures((^self).invariant())]
+    #[ensures((^other).invariant())]
+    #[ensures(@(^self).len == @(*self).len +  @(*other).len)]
+    #[ensures(@(^other).len == 0)]
+    pub fn append(&mut self, other: &mut Self) {
+        let src = &mut other.data[0..other.len];
+        self.extend_from_maybe_uninit(src);
+        proof_assert!(forall<i: Int> 0 <= i && i < (@src).len() ==> (@src)[i] == (@other.data)[i]);
+        other.len = 0;
     }
 
     #[requires(self.invariant())]
@@ -165,6 +212,11 @@ fn test() {
     x.push(2);
     x.get(1).unwrap();
     assert!(x.get(5).is_none());
+    x.pop().unwrap();
+    let mut y = Vec::new();
+    y.push(1);
+    x.append(&mut y);
+    assert!(y.pop().is_none());
     x.pop().unwrap();
     x.pop().unwrap();
     assert!(x.pop().is_none());
