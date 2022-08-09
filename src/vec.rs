@@ -29,7 +29,8 @@ impl<T> Vec<T> {
     #[ensures(result.invariant())]
     #[ensures(@result.len == 0)]
     pub fn new() -> Self {
-        Self::with_capacity(0)
+        let data = new_uninit_box_slice(0); // todo replace with Box::new([])
+        Vec{len: 0, data}
     }
 
     #[requires((*self).invariant())]
@@ -50,6 +51,17 @@ impl<T> Vec<T> {
         proof_assert!(forall<i: Int> @len <= i && i < old_data.len() ==> (@data)[i] == old_data[i]);
         proof_assert!(forall<i: Int> @len <= i && i < old_data.len() ==> !(@data)[i].is_init());
         proof_assert!(forall<i: Int> @len <= i && i < (@data).len() ==> !(@data)[i].is_init());
+    }
+
+    #[requires((*self).invariant())]
+    #[ensures((^self).len == (*self).len)]
+    #[ensures((^self).data.model().len() == @(*self).len)]
+    #[ensures((*self).data.model().subsequence(0, (^self).data.model().len()) == (^self).data.model())]
+    #[ensures((^self).invariant())]
+    pub fn shrink_to_fit(&mut self) {
+        let Vec{data, ref len} = self;
+        //let old_data: Ghost<Seq<MaybeUninit<T>>> = ghost!(data.model());
+        realloc_box_slice(data, *len);
     }
 
     #[requires((*self).invariant())]
@@ -77,6 +89,37 @@ impl<T> Vec<T> {
         } else {
             self.len -= 1;
             Some(self.data[self.len].take())
+        }
+    }
+
+    #[requires(self.invariant())]
+    #[ensures(result.0 == self.len)]
+    #[ensures(result.1 == self.data)]
+    #[ensures(Vec{len: result.0, data: result.1}.invariant())]
+    pub fn into_raw_parts(self) -> (usize, Box<[MaybeUninit<T>]>) {
+        let mut me = self;
+        let mut dummy = new_uninit_box_slice(0); // todo replace with Box::new([])
+        let data = ::std::mem::replace(&mut me.data,dummy);
+        (me.len, data)
+    }
+
+    #[requires(self.invariant())]
+    #[ensures((@result).len() == @self.len)]
+    pub fn into_box_slice(self) -> Box<[T]> {
+        let mut me = self;
+        me.shrink_to_fit();
+        let data = me.into_raw_parts().1;
+        transmute::<_, BoxTFn<ArrTFn<AssumeInitTFn>>>(data)
+    }
+}
+
+impl<T> Drop for Vec<T> {
+    #[requires((*self).invariant())]
+    #[requires((^self).invariant())]
+    fn drop(&mut self) {
+        #[invariant(inv, self.invariant())]
+        while self.len > 0 {
+            self.pop();
         }
     }
 }
