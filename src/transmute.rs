@@ -119,7 +119,8 @@ where T0::Output: Sized {
     fn postcondition(arg: [X], res: Self::Output) -> bool {
         let arg = arg.model();
         let res = res.model();
-        pearlite!{forall<i: Int> 0 <= i && i < (arg).len() ==> T0::postcondition((arg)[i], (res)[i])}
+        arg.len() == res.len() &&
+            pearlite!{forall<i: Int> 0 <= i && i < arg.len() ==> T0::postcondition(arg[i], res[i])}
     }
 }
 

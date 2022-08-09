@@ -1,6 +1,8 @@
 use creusot_contracts::*;
+use ::std::ops::{Deref, DerefMut};
 use crate::head_dst::{new_uninit_box_slice, realloc_box_slice};
-use crate::uninit::MaybeUninit;
+use crate::transmute::{ArrTFn, BoxTFn, MutTFn, RefTFn, transmute, TransmuteFn};
+use crate::uninit::{AssumeInitTFn, MaybeUninit, MaybeUninitTFn};
 
 struct Vec<T>{
     len: usize,
@@ -57,11 +59,7 @@ impl<T> Vec<T> {
     pub fn push(&mut self, new: T) {
         if self.len == self.data.len() {
             let len = self.len;
-            let new_len = if len == 0 {
-                10
-            } else {
-                len * 2
-            };
+            let new_len = if len == 0 { 10 } else { len * 2 };
             self.reserve_exact(new_len);
         }
         let Vec{data, len} = self;
@@ -83,11 +81,47 @@ impl<T> Vec<T> {
     }
 }
 
+impl<T> Deref for Vec<T> {
+    type Target = [T];
+
+    #[requires(self.invariant())]
+    #[ensures((@result).len() == @self.len)]
+    fn deref(&self) -> &Self::Target {
+        let init = &self.data[0..self.len];
+        transmute::<_, RefTFn<ArrTFn<AssumeInitTFn>>>(init)
+    }
+}
+
+impl<T> DerefMut for Vec<T> {
+    #[requires((*self).invariant())]
+    #[ensures((@result).len() == @self.len)]
+    #[ensures((^self).len == (*self).len)]
+    #[ensures((^self).invariant())]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        let init = &mut self.data[0..self.len];
+        let res = transmute::<_, MutTFn<ArrTFn<AssumeInitTFn>, ArrTFn<MaybeUninitTFn>>>(init);
+        proof_assert!(forall<i: Int> 0 <= i && i < (@^init).len() ==> (@^init)[i].is_init());
+        proof_assert!(@(^self).len == (@^init).len());
+        proof_assert!(forall<i: Int> 0 <= i && i < @(^self).len ==> (@(^self).data)[i] == (@^init)[i]);
+        res
+    }
+}
+
+impl<T> From<Box<[T]>> for Vec<T> {
+    #[ensures(result.invariant())]
+    fn from(b: Box<[T]>) -> Self {
+        let data = transmute::<_, BoxTFn<ArrTFn<MaybeUninitTFn>>>(b);
+        Vec{len: data.len(), data}
+    }
+}
+
 #[cfg_attr(not(feature = "contracts"), test)]
 fn test() {
     let mut x = Vec::new();
     x.push(1);
     x.push(2);
+    x.get(1).unwrap();
+    assert!(x.get(5).is_none());
     x.pop().unwrap();
     x.pop().unwrap();
     assert!(x.pop().is_none());

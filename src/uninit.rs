@@ -24,7 +24,7 @@ unsafe impl<T> TransmuteFn<T> for MaybeUninitTFn {
     }
 }
 
-struct AssumeInitTFn;
+pub struct AssumeInitTFn;
 
 unsafe impl<T> TransmuteFn<MaybeUninit<T>> for AssumeInitTFn {
     type Output = T;
