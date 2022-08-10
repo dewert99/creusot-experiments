@@ -42,6 +42,20 @@ fn lseg_basis<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> TokenM<T> {
     }
 }
 
+#[logic]
+#[variant(token.len())]
+#[requires(lseg(ptr, other, token))]
+#[ensures(result.len() == lseg_basis(ptr, other, token).len())]
+#[ensures(ptr == other ==> result == Seq::EMPTY)]
+fn lseg_seq<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> Seq<T> {
+    if ptr == other {
+        Seq::EMPTY
+    } else {
+        let node = token.lookup(ptr);
+        Seq::singleton(node.data).concat(lseg_seq(node.next, other, token.remove(ptr)))
+    }
+}
+
 #[predicate]
 fn lseg_strict<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> bool {
     lseg(ptr, other, token) && lseg_basis(ptr, other, token).ext_eq(token)
@@ -54,6 +68,7 @@ fn lseg_strict<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> bool {
 #[ensures(result)]
 #[ensures(result ==> lseg(ptr, other, token2))]
 #[ensures(result ==> lseg_basis(ptr, other, token1) == lseg_basis(ptr, other, token2))]
+#[ensures(result ==> lseg_seq(ptr, other, token1).ext_eq(lseg_seq(ptr, other, token2)))]
 fn lseg_super<T>(ptr: Ptr<T>, other: Ptr<T>, token1: TokenM<T>, token2: TokenM<T>) -> bool {
     if ptr != other {
         let next = token1.lookup(ptr).next;
@@ -72,11 +87,20 @@ fn lseg_super<T>(ptr: Ptr<T>, other: Ptr<T>, token1: TokenM<T>, token2: TokenM<T
 #[ensures(result)]
 #[ensures(result ==> lseg(ptr1, ptr3, token12.union(token23)))]
 #[ensures(result ==> lseg_basis(ptr1, ptr3, token12.union(token23)).ext_eq(lseg_basis(ptr1, ptr2, token12).union(lseg_basis(ptr2, ptr3, token23))))]
+#[ensures(result ==> lseg_seq(ptr1, ptr3, token12.union(token23)).ext_eq(lseg_seq(ptr1, ptr2, token12).concat(lseg_seq(ptr2, ptr3, token23))))]
+// TODO clean up once why3 gets a better discriminate transformation
 fn lseg_trans<T>(ptr1: Ptr<T>, ptr2: Ptr<T>, ptr3: Ptr<T>, token12: TokenM<T>, token23: TokenM<T>) -> bool {
     TokenM::<T>::union_remove;
     if ptr1 != ptr2 {
-        let next = token12.lookup(ptr1).next;
-        lseg_trans(next, ptr2, ptr3, token12.remove(ptr1), token23)
+        let Node{data, next} = token12.lookup(ptr1);
+        lseg_trans(next, ptr2, ptr3, token12.remove(ptr1), token23) &&
+            token12.union(token23).remove(ptr1) == token12.remove(ptr1).union(token23) &&
+            lseg_seq(ptr1, ptr2, token12) ==
+                Seq::singleton(data).
+                    concat(lseg_seq(next, ptr2, token12.remove(ptr1))) &&
+            lseg_seq(ptr1, ptr3, token12.union(token23)) ==
+                Seq::singleton(data).
+                    concat(lseg_seq(next, ptr3, token12.union(token23).remove(ptr1)))
     } else {
         lseg_super(ptr2, ptr3, token23, token12.union(token23))
     }
@@ -118,6 +142,17 @@ impl<T> LinkedList<T> {
         }
     }
 
+    #[logic]
+    #[requires(self.invariant())]
+    pub fn to_seq(self) -> Seq<T> {
+        let LinkedList{head, tail, token} = self;
+        if head == Ptr::null_logic() {
+            Seq::EMPTY
+        } else {
+            lseg_seq(head, tail, token.model().remove(tail)).push(token.model().lookup(tail).data)
+        }
+    }
+
 
     #[predicate]
     #[requires(self.invariant())]
@@ -144,11 +179,11 @@ impl<T> LinkedList<T> {
     #[requires((*self).invariant())]
     #[ensures((^self).invariant())]
     #[ensures((^self).token.model().len() == (*self).token.model().len() + 1)]
+    #[ensures((^self).to_seq().ext_eq((*self).to_seq().push(elt)))]
     pub fn enqueue(&mut self, elt: T) {
         let LinkedList{head, tail, token} = self;
         let old_token: Ghost<TokenM<T>> = ghost!(token.model());
         let node = Node{data: elt, next: Ptr::null()};
-        //let gnode: Ghost<Node<T>> = ghost!(node);
         let ptr = GhostPtr::new_in(node, token);
         if head.is_null() {
             *head = ptr;
@@ -169,9 +204,11 @@ impl<T> LinkedList<T> {
 
     #[requires((*self).invariant())]
     #[ensures(self.token.model().len() == 0 ==> result == None && *self == ^self)]
-    #[ensures(self.token.model().len() != 0 ==> result != None && (^self).token.model().len() == (*self).token.model().len() - 1)]
+    #[ensures(self.token.model().len() != 0 ==>
+        result == Some((*self).to_seq().head()) && (^self).to_seq().ext_eq((*self).to_seq().tail()))]
     #[ensures((^self).invariant())]
     pub fn dequeue(&mut self) -> Option<T> {
+        let old_self = ghost!(self);
         let LinkedList{head, ref tail, token} = self;
         if head.is_null() {
             None
@@ -180,6 +217,8 @@ impl<T> LinkedList<T> {
             let Node{data, next} = head.take(token);
             proof_assert!(next != Ptr::null_logic() ==> token.model().remove(*tail).ext_eq(old_token.remove(*tail).remove(*head)));
             *head = next;
+            proof_assert!(next == Ptr::null_logic() ==> self.to_seq().ext_eq(old_self.to_seq().tail()));
+            proof_assert!(next != Ptr::null_logic() ==> self.to_seq().ext_eq(old_self.to_seq().tail()));
             Some(data)
         }
     }
@@ -240,8 +279,8 @@ impl<T> LinkedList<T> {
 fn test() {
     let mut l = LinkedList::new();
     l.enqueue(5);
-    l.dequeue();
-    l.dequeue();
+    assert!(l.dequeue().unwrap() == 5);
+    assert!(l.dequeue().is_none());
     l.enqueue(7);
     l.enqueue(9);
     let mut it = l.iter_mut();
