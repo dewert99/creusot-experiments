@@ -1,6 +1,7 @@
 use creusot_contracts::*;
 use crate::ghost_ptr::*;
 use crate::p_map::PMap;
+use crate::helpers::unwrap;
 
 struct Node<T>{
     data: T,
@@ -153,21 +154,43 @@ impl<T> LinkedList<T> {
         }
     }
 
+    #[logic]
+    #[why3::attr = "inline:trivial"]
+    pub fn len(self) -> Int {
+        self.to_seq().len()
+    }
 
-    #[predicate]
-    #[requires(self.invariant())]
-    #[ensures(result)]
-    #[ensures(result ==> lseg_strict(self.head, Ptr::null_logic(), self.token.model()))]
-    pub fn invariant2(self) -> bool {
-        let LinkedList{head, tail, token} = self;
-        if head == Ptr::null_logic() {
-            true
-        } else {
-            lseg_strict(tail, Ptr::null_logic(), TokenM::empty().insert(tail, token.model().lookup(tail))) &&
-                lseg_trans(head, tail, Ptr::null_logic(),
-                       token.model().remove(tail), TokenM::empty().insert(tail, token.model().lookup(tail))) &&
-                token.model().remove(tail).union(TokenM::empty().insert(tail, token.model().lookup(tail))).ext_eq(token.model())
-        }
+
+    #[requires((*self).invariant())]
+    #[requires(self.head != Ptr::null_logic())]
+    #[ensures(result.data == (*self).to_seq().head() && (^self).to_seq().ext_eq((*self).to_seq().tail()))]
+    #[ensures((^self).invariant())]
+    fn dequeue_box(&mut self) -> Box<Node<T>> {
+        let old_self = ghost!(self);
+        let LinkedList{head, ref tail, token} = self;
+        let old_token: Ghost<TokenM<T>>  = ghost!(token.model());
+        let res = head.take_box(token);
+        let next = res.next;
+        proof_assert!(next != Ptr::null_logic() ==> token.model().remove(*tail).ext_eq(old_token.remove(*tail).remove(*head)));
+        *head = next;
+        proof_assert!(next == Ptr::null_logic() ==> self.to_seq().ext_eq(old_self.to_seq().tail()));
+        proof_assert!(next != Ptr::null_logic() ==> self.to_seq().ext_eq(old_self.to_seq().tail()));
+        res
+    }
+
+    #[requires((*self).invariant())]
+    #[requires(self.head != Ptr::null_logic())]
+    #[ensures((^self).to_seq().ext_eq(Seq::singleton(val.data).concat((*self).to_seq())))]
+    #[ensures((^self).invariant())]
+    fn push_box(&mut self, val: Box<Node<T>>) {
+        let old_self: Ghost<&mut Self> = ghost!(self);
+        let mut val = val;
+        let LinkedList{head, ref tail, token} = self;
+        val.next = *head;
+        let ptr = GhostPtr::from_box_in(val, token);
+        proof_assert!(old_self.token.model().remove(*tail).ext_eq(token.model().remove(*tail).remove(ptr)));
+        *head = ptr;
+        //proof_assert!(old_self.to_seq() == lseg_seq(old_self.head, *tail, old_self.token.model().remove(*tail)).push(old_self.token.model().lookup(*tail).data));
     }
 
     #[ensures(result.token.model().len() == 0)]
@@ -178,7 +201,6 @@ impl<T> LinkedList<T> {
 
     #[requires((*self).invariant())]
     #[ensures((^self).invariant())]
-    #[ensures((^self).token.model().len() == (*self).token.model().len() + 1)]
     #[ensures((^self).to_seq().ext_eq((*self).to_seq().push(elt)))]
     pub fn enqueue(&mut self, elt: T) {
         let LinkedList{head, tail, token} = self;
@@ -203,24 +225,49 @@ impl<T> LinkedList<T> {
     }
 
     #[requires((*self).invariant())]
-    #[ensures(self.token.model().len() == 0 ==> result == None && *self == ^self)]
-    #[ensures(self.token.model().len() != 0 ==>
+    #[ensures(self.len() == 0 ==> result == None && *self == ^self)]
+    #[ensures(self.len() != 0 ==>
         result == Some((*self).to_seq().head()) && (^self).to_seq().ext_eq((*self).to_seq().tail()))]
     #[ensures((^self).invariant())]
     pub fn dequeue(&mut self) -> Option<T> {
-        let old_self = ghost!(self);
-        let LinkedList{head, ref tail, token} = self;
-        if head.is_null() {
+        if self.head.is_null() {
             None
         } else {
-            let old_token: Ghost<TokenM<T>>  = ghost!(token.model());
-            let Node{data, next} = head.take(token);
-            proof_assert!(next != Ptr::null_logic() ==> token.model().remove(*tail).ext_eq(old_token.remove(*tail).remove(*head)));
-            *head = next;
-            proof_assert!(next == Ptr::null_logic() ==> self.to_seq().ext_eq(old_self.to_seq().tail()));
-            proof_assert!(next != Ptr::null_logic() ==> self.to_seq().ext_eq(old_self.to_seq().tail()));
-            Some(data)
+            Some(self.dequeue_box().data)
         }
+    }
+
+    #[requires((*self).invariant())]
+    #[ensures((^self).invariant())]
+    #[ensures(forall<i: Int> 0 <= i && i < (^self).len() ==>
+        (^self).to_seq()[i] == (*self).to_seq()[(*self).len() - 1 - i])]
+    #[ensures((^self).len() == (*self).len())]
+    pub fn reverse(&mut self) {
+        if self.head.is_null() {
+            return
+        }
+        let old_list = ghost!(self);
+        let mut front = self.dequeue_box();
+        front.next = Ptr::null();
+        let mut new_token = Token::new();
+        let ptr = Ptr::from_box_in(front, &mut new_token);
+        let mut new_list = LinkedList{head: ptr, tail: ptr, token: new_token};
+        proof_assert!(new_list.len() == 1);
+        proof_assert!(new_list.len() == 1);
+        #[invariant(old_inv, self.invariant())]
+        #[invariant(new_inv, new_list.invariant())]
+        #[invariant(non_empty, new_list.head != Ptr::null_logic())]
+        #[invariant(fut, ^self == ^*old_list)]
+        #[invariant(rev, forall<i: Int> 0 <= i && i < new_list.len() ==>
+            new_list.to_seq()[i] == old_list.to_seq()[new_list.len() - 1 - i])]
+        #[invariant(size, new_list.len() <= old_list.len())]
+        #[invariant(prog, self.to_seq().ext_eq(old_list.to_seq().subsequence(new_list.len(), old_list.len())))]
+        while !self.head.is_null() {
+            let b = self.dequeue_box();
+            proof_assert!(self.to_seq().ext_eq(old_list.to_seq().subsequence(new_list.len() + 1, old_list.len())));
+            new_list.push_box(b)
+        }
+        *self = new_list
     }
 
     #[requires((*self).invariant())]
@@ -244,45 +291,20 @@ impl<T> LinkedList<T> {
     }
 }
 
-// pub struct IterMut<'a, T>{
-//     head: Ptr<T>,
-//     token: &'a mut Token<T>,
-// }
-//
-// impl<'a, T> IterMut<'a, T> {
-//
-//     #[predicate]
-//     pub fn invariant(self) -> bool {
-//         lseg_strict(self.head, Ptr::null_logic(), self.token.model())
-//     }
-//
-//     #[requires((*self).invariant())]
-//     #[ensures((*self).token.model().len() == 0 ==> result == None && *self == ^self)]
-//     #[ensures((*self).token.model().len() != 0 ==> (^self).token.model().len() == (*self).token.model().len() - 1)]
-//     #[ensures((*self).token.model().len() != 0 ==> result != None && (^self).token.model().len() == (*self).token.model().len() - 1)]
-//     #[ensures((^self).invariant())]
-//     pub fn next(&mut self) -> Option<&'a mut T> {
-//         let IterMut{head, token} = self;
-//         if head.is_null() {
-//             None
-//         } else {
-//             let old_head: Ghost<Ptr<T>> = ghost!(*head);
-//             let old_token: Ghost<TokenM<T>>  = ghost!(token.model());
-//             let Node{data, next} = head.reborrow(token);
-//             *head = *next;
-//             Some(data)
-//         }
-//     }
-// }
-
 #[cfg_attr(not(feature = "contracts"), test)]
 fn test() {
     let mut l = LinkedList::new();
-    l.enqueue(5);
-    assert!(l.dequeue().unwrap() == 5);
+    l.enqueue(1);
+    assert!(l.dequeue().unwrap() == 1);
     assert!(l.dequeue().is_none());
-    l.enqueue(7);
-    l.enqueue(9);
+    l.enqueue(2);
+    l.enqueue(3);
+    l.reverse();
+    assert!(l.dequeue().unwrap() == 3);
+    assert!(l.dequeue().unwrap() == 2);
+    assert!(l.dequeue().is_none());
+    l.enqueue(5);
+    l.enqueue(8);
     let mut it = l.iter_mut();
     it.next();
     it.next();
