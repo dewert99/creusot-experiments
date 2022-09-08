@@ -52,6 +52,16 @@ impl<T: ?Sized> GhostToken<T> {
     #[ensures((@^self) == (@*self).union(@other))]
     pub fn absorb(&mut self, other: GhostToken<T>) {}
 
+    #[trusted]
+    #[law]
+    #[requires((@self).contains(ptr1) && (@self).contains(ptr2))]
+    #[requires(ptr1.addr_logic() == ptr2.addr_logic())]
+    #[ensures(result)]
+    #[ensures(result ==> ptr1 == ptr2)]
+    pub fn injective_lemma(self, ptr1: GhostPtr<T>, ptr2: GhostPtr<T>) -> bool {
+        absurd
+    }
+
     /// Leaks memory iff the precondition fails
     #[requires((@self).is_empty())]
     pub fn drop(self) {}
@@ -60,7 +70,7 @@ impl<T: ?Sized> GhostToken<T> {
 impl<T> GhostPtr<T> {
     /// Creates a [`GhostPtr`] with initial value `val` and gives `t` permission to it
     // Safety this pointer was newly allocated no other GhostToken could have permission to it
-    #[ensures(! (@*t).contains(result))]
+    #[ensures(!(@*t).contains(result))]
     #[ensures(@^t == (@*t).insert(result, val))]
     pub fn new_in(val: T, t: &mut GhostToken<T>) -> Self {
         Self::from_box_in(Box::new(val), t)
