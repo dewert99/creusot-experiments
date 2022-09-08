@@ -52,7 +52,7 @@ fn owns_super(union_find: TokenM, other: TokenM, ptr: NodePtr) -> bool {
 }
 
 #[logic]
-fn union(union_find: TokenM, ptr1: NodePtr, ptr2: NodePtr) -> TokenM {
+fn set_parent(union_find: TokenM, ptr1: NodePtr, ptr2: NodePtr) -> TokenM {
     union_find.insert(ptr1, Node::Internal {parent: ptr2})
 }
 
@@ -61,19 +61,46 @@ fn union(union_find: TokenM, ptr1: NodePtr, ptr2: NodePtr) -> TokenM {
 #[requires(owns(union_find, ptr1) && representative(union_find, ptr1) == ptr1)]
 #[requires(owns(union_find, ptr2) && representative(union_find, ptr2) == ptr2 && ptr2 != ptr1)]
 #[ensures(result)]
-#[ensures(owns(union(union_find, ptr1, ptr2), ptr3))]
+#[ensures(owns(set_parent(union_find, ptr1, ptr2), ptr3))]
 #[ensures(representative(union_find, ptr3) == ptr1
-  ==> representative(union(union_find, ptr1, ptr2), ptr3) == representative(union_find, ptr2))]
+  ==> representative(set_parent(union_find, ptr1, ptr2), ptr3) == representative(union_find, ptr2))]
 #[ensures(representative(union_find, ptr3) != ptr1
-  ==> representative(union(union_find, ptr1, ptr2), ptr3) == representative(union_find, ptr3))]
+  ==> representative(set_parent(union_find, ptr1, ptr2), ptr3) == representative(union_find, ptr3))]
 #[variant(union_find.len())]
 fn owns_union(union_find: TokenM, ptr1: NodePtr, ptr2: NodePtr, ptr3: NodePtr) -> bool {
     owns_super;
     match union_find.lookup(ptr3) {
-        Node::Root{..} => owns(union(union_find, ptr1, ptr2), ptr3),
+        Node::Root{..} => true,
         Node::Internal {parent} =>
-            union(union_find, ptr1, ptr2).remove(ptr3).ext_eq(union(union_find.remove(ptr3), ptr1, ptr2)) &&
+            set_parent(union_find, ptr1, ptr2).remove(ptr3).ext_eq(set_parent(union_find.remove(ptr3), ptr1, ptr2)) &&
                 owns_union(union_find.remove(ptr3), ptr1, ptr2, parent)
+    }
+}
+
+#[logic]
+fn compress(union_find: TokenM, ptr: NodePtr) -> TokenM {
+    set_parent(union_find, ptr, representative(union_find, ptr))
+}
+
+#[law]
+#[requires(owns(union_find, ptr1) && owns(sub_union_find, ptr2))]
+#[requires(sub_union_find.subset(union_find))]
+#[requires(match union_find.lookup(ptr1) {Node::Root{..} => false, _ => true})]
+#[ensures(result)]
+#[ensures(owns(set_parent(sub_union_find, ptr1, representative(union_find, ptr1)), ptr2))]
+#[ensures(representative(set_parent(sub_union_find, ptr1, representative(union_find, ptr1)), ptr2) == representative(sub_union_find, ptr2))]
+#[variant(sub_union_find.len())]
+fn owns_compress(sub_union_find: TokenM, union_find: TokenM, ptr1: NodePtr, ptr2: NodePtr) -> bool {
+    if ptr1 == ptr2 {
+        owns_super(sub_union_find, union_find, ptr1)
+    } else {
+        match sub_union_find.lookup(ptr2) {
+            Node::Root{..} => true,
+            Node::Internal {parent} =>
+                owns_compress(sub_union_find.remove(ptr2), union_find, ptr1, parent)
+                    && set_parent(sub_union_find, ptr1, representative(union_find, ptr1)).remove(ptr2)
+                    .ext_eq(set_parent(sub_union_find.remove(ptr2), ptr1, representative(union_find, ptr1)))
+        }
     }
 }
 
@@ -98,11 +125,14 @@ impl UnionFind {
         (^self).owns(ptr3) && (^self).representative(ptr3) == (*self).representative(ptr3))]
     #[ensures(result == self.representative(ptr))]
     fn find(&mut self, ptr: NodePtr) -> NodePtr {
+        owns_compress;
         match ptr.borrow(&self.0) {
             Node::Root {..} => ptr,
             Node::Internal {parent} => {
                 proof_assert!(owns_super(self.0.model().remove(ptr), self.0.model(), *parent));
-                self.find(*parent)
+                let rep = self.find(*parent);
+                *ptr.borrow_mut(&mut self.0) = Node::Internal {parent: rep};
+                rep
             }
         }
     }
