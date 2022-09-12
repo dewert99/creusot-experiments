@@ -160,7 +160,6 @@ impl<T> LinkedList<T> {
         self.to_seq().len()
     }
 
-
     #[requires((*self).invariant())]
     #[requires(self.head != Ptr::null_logic())]
     #[ensures(result.data == (*self).to_seq().head() && (^self).to_seq().ext_eq((*self).to_seq().tail()))]
@@ -203,6 +202,7 @@ impl<T> LinkedList<T> {
     #[ensures((^self).invariant())]
     #[ensures((^self).to_seq().ext_eq((*self).to_seq().push(elt)))]
     pub fn enqueue(&mut self, elt: T) {
+        let old_self = ghost!(self);
         let LinkedList{head, tail, token} = self;
         let old_token: Ghost<TokenM<T>> = ghost!(token.model());
         let node = Node{data: elt, next: Ptr::null()};
@@ -220,6 +220,7 @@ impl<T> LinkedList<T> {
             proof_assert!(lseg_basis(*head, *tail, old_token.remove(*tail)).ext_eq(old_token.remove(*tail)));
             proof_assert!(lseg_trans(*head, *tail, ptr, old_token.remove(*tail), PMap::empty().insert(*tail, old_token.lookup(*tail))));
             proof_assert!(old_token.remove(*tail).union(PMap::empty().insert(*tail, old_token.lookup(*tail))).ext_eq(*old_token));
+            proof_assert!(lseg_seq(*head, ptr, *old_token).ext_eq(old_self.to_seq()));
             *tail = ptr;
         }
     }
@@ -272,6 +273,8 @@ impl<T> LinkedList<T> {
 
     #[requires((*self).invariant())]
     #[ensures(result.invariant())]
+    #[ensures(result.curr_seq() == (*self).to_seq())]
+    #[ensures(result.fut_inv() ==> result.fut_seq() == (^self).to_seq())]
     #[ensures(^self == LinkedList{head: *result.head, tail: *result.tail, token: ^*result.full_token})]
     pub fn iter_mut(&mut self) -> IterMut2<'_, T> {
         let token = &mut self.token;
@@ -306,10 +309,20 @@ fn test() {
     l.enqueue(5);
     l.enqueue(8);
     let mut it = l.iter_mut();
-    it.next();
-    it.next();
-    it.next();
+    let old_it = ghost!(it);
+    let a = it.next().unwrap();
+    let b = it.next().unwrap();
+    let c = it.next();
+    proof_assert!(c == None);
+    proof_assert!(@a == 5);
+    proof_assert!(@b == 8);
+    *a += *b;
+    *b += *a;
     it.drop();
+    proof_assert!(old_it.fut_inv());
+    proof_assert!(l.to_seq()[0] == 13u32);
+    proof_assert!(l.to_seq()[1] == 21u32);
+    proof_assert!(l.to_seq().len() == 2);
     l.drop();
 }
 
@@ -332,7 +345,7 @@ impl<'a, T> IterMut2<'a, T> {
     pub fn invariant(self) -> bool {
         LinkedList{head: self.curr, tail: *self.tail, token: *self.token}.invariant() && pearlite!{
             (self.curr != Ptr::null_logic() ==> *self.head != Ptr::null_logic()) &&
-            (token_shrink(*self.token, ^self.token) && LinkedList{head: self.curr, tail: *self.tail, token: ^self.token}.invariant()
+            (LinkedList{head: self.curr, tail: *self.tail, token: ^self.token}.invariant()
             ==> LinkedList{head: *self.head, tail: *self.tail, token: ^*self.full_token}.invariant()) }
     }
 
@@ -341,13 +354,36 @@ impl<'a, T> IterMut2<'a, T> {
         self.head == fut.head && self.tail == fut.tail && self.full_token == fut.full_token
     }
 
+    #[logic]
+    #[requires(self.invariant())]
+    #[ensures(result.len() == self.token.model().len())]
+    pub fn curr_seq(self) -> Seq<T> {
+        LinkedList{head: self.curr, tail: *self.tail, token: *self.token}.to_seq()
+    }
+
+    #[predicate]
+    fn fut_inv(self) -> bool {
+        pearlite!{LinkedList{head: self.curr, tail: *self.tail, token: ^self.token}.invariant()}
+    }
+
+    #[logic]
+    #[requires(self.fut_inv())]
+    pub fn fut_seq(self) -> Seq<T> {
+        pearlite!{LinkedList{head: self.curr, tail: *self.tail, token: ^self.token}.to_seq()}
+    }
+
     #[requires((*self).invariant())]
-    #[ensures((*self).token.model().len() == 0 ==> result == None && *self == ^self)]
-    #[ensures((*self).token.model().len() != 0 ==> (^self).token.model().len() == (*self).token.model().len() - 1)]
-    #[ensures((*self).token.model().len() != 0 ==> result != None && (^self).token.model().len() == (*self).token.model().len() - 1)]
+    #[ensures((*self).curr_seq().len() == 0 ==> result == None && *self == ^self)]
+    #[ensures((*self).curr_seq().len() != 0 ==> match result {
+        None => false,
+        Some(elt) => Seq::singleton(*elt).concat((^self).curr_seq()).ext_eq((*self).curr_seq()) &&
+            ((*self).fut_inv() ==> Seq::singleton(^elt).concat((^self).fut_seq()).ext_eq((*self).fut_seq()))
+    })]
+    #[ensures((^self).fut_inv() ==> (*self).fut_inv())]
     #[ensures((^self).invariant())]
     #[ensures((*self).produces(^self))]
     pub fn next(&mut self) -> Option<&'a mut T> {
+        let old_self = ghost!(self);
         let IterMut2 { curr, token, ..} = self;
         let tail = ghost!(*self.tail);
         let head = ghost!(*self.head);
@@ -362,16 +398,18 @@ impl<'a, T> IterMut2<'a, T> {
             let Node{data, ref next} = curr.reborrow(token);
             proof_assert!(*next != Ptr::null_logic() ==> token.model().remove(*tail).ext_eq(old_token_m.remove(*tail).remove(*curr)));
             proof_assert!(@^*old_token == (@^*token).insert(*curr, Node{data: ^data, next: *next}));
-            proof_assert!(token_shrink(**token, ^*token) ==> token_shrink(**old_token, ^*old_token));
-            proof_assert!(token_shrink(**token, ^*token) && *curr != *tail ==>
+            proof_assert!((@^*old_token).remove(*curr).ext_eq(@^*token));
+            proof_assert!(*curr != *tail ==>
                 (@^*token).remove(*tail).ext_eq((@^*old_token).remove(*tail).remove(*curr)));
             //proof_assert!(lseg_strict(*curr, *next, PMap::empty().insert(*curr, Node{data: ^data, next: *next})));
             //proof_assert!(*curr != *tail && lseg(*next, *tail, (@^*token).remove(*tail)) ==> lseg(*curr, *tail, (@^*old_token).remove(*tail)));
-            proof_assert!(token_shrink(**token, ^*token) && *curr != *tail && lseg_strict(*next, *tail, (@^*token).remove(*tail))
+            proof_assert!(*curr != *tail && lseg_strict(*next, *tail, (@^*token).remove(*tail))
                 ==> lseg_strict(*curr, *tail, (@^*old_token).remove(*tail)));
-            proof_assert!(token_shrink(**token, ^*token) && LinkedList{head: *next, tail: *tail, token: ^*token}.invariant()
-            ==> LinkedList{head: *curr, tail: *tail, token: ^*old_token}.invariant() );
             *curr = *next;
+            proof_assert!(self.fut_inv() ==> old_self.fut_inv());
+            proof_assert!(*next != Ptr::null_logic() && old_self.fut_inv() ==>
+                Seq::singleton(^data).concat(self.fut_seq()).ext_eq(old_self.fut_seq()));
+            proof_assert!(*next != Ptr::null_logic() ==> Seq::singleton(*data).concat(self.curr_seq()).ext_eq(old_self.curr_seq()));
             proof_assert!(*next != Ptr::null_logic() ==> LinkedList{head: *curr, tail: *tail, token: **token}.invariant());
             // proof_assert!((@^*token).subset(@**token) && LinkedList{head: *curr, tail: *tail, token: ^*token}.invariant()
             // ==> LinkedList{head: *head, tail: *tail, token: ^*full_token}.invariant() );
@@ -381,6 +419,8 @@ impl<'a, T> IterMut2<'a, T> {
     }
 
     #[requires(self.invariant())]
+    #[ensures(self.fut_inv())]
+    #[ensures(self.curr_seq() == self.fut_seq())]
     #[ensures(LinkedList{head: *self.head, tail: *self.tail, token: ^*self.full_token}.invariant())]
     pub fn drop(self) {
         let IterMut2 { curr, token, ..} = self;

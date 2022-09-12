@@ -145,6 +145,7 @@ impl<T: ?Sized> GhostPtr<T> {
     #[ensures(*result == *(@**t).lookup_ghost(self))]
     #[ensures(@*^t == (@**t).remove(self))]
     #[ensures(@^*t == (@^^t).insert(self, ^result))]
+    #[ensures(!(@^^t).contains(self))]
     pub fn reborrow<'o, 'i>(self, t: &'o mut &'i mut GhostToken<T>) -> &'i mut T {
         unsafe { &mut *self.0}
     }
