@@ -1,8 +1,8 @@
 use creusot_contracts::*;
 use ::std::ops::{Deref, DerefMut};
 use crate::head_dst::{new_uninit_box_slice, realloc_box_slice};
-use crate::transmute::{ArrTFn, BoxTFn, MutTFn, RefTFn, transmute, TransmuteFn};
-use crate::uninit::{AssumeInitTFn, MaybeUninit, MaybeUninitTFn, memcpy};
+use crate::mem::transmute::{ArrTFn, BoxTFn, MutTFn, RefTFn, transmute, TransmuteFn};
+use crate::mem::uninit::{AssumeInitTFn, MaybeUninit, MaybeUninitTFn, memcpy};
 
 struct Vec<T>{
     len: usize,

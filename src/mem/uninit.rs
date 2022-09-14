@@ -3,7 +3,7 @@ use creusot_contracts::*;
 use ::std::mem;
 use ::std::alloc::{alloc, Layout};
 use ::std::ptr::slice_from_raw_parts_mut;
-use crate::transmute::*;
+use super::transmute::*;
 
 #[trusted]
 pub struct MaybeUninit<T>(mem::MaybeUninit<T>);

@@ -1,13 +1,13 @@
 use creusot_contracts::*;
 use ::std::alloc::{alloc, dealloc, handle_alloc_error, Layout, LayoutError, realloc};
 use ::std::ptr::{addr_of_mut, from_raw_parts_mut, invalid_mut, NonNull, Pointee, read, write};
-use crate::transmute::{BoxTFn, MutTFn, transmute, TransmuteFn};
-use crate::uninit::MaybeUninit;
+use crate::mem::transmute::{BoxTFn, MutTFn, transmute, TransmuteFn};
+use crate::mem::uninit::MaybeUninit;
 
 #[repr(C)]
 pub struct HeadDst<H, T: ?Sized>{
-    head: H,
-    tail: T
+    pub head: H,
+    pub tail: T
 }
 
 #[trusted]
