@@ -264,6 +264,7 @@ In a `#[trusted]` functions the `assert!` macro can be used like an `assume` tha
 Constructing a type with an invariant asserts the invariant (as a safety precondition)
 Functions that destructure a mutable reference to a type with an invariant must reassert the invariant added anytime the lifetime of the destructure ends (even during unwinding)
 If the lifetime extends beyond the length of the function then the invariant must be asserted wherever the functions returns (even during unwinding)
+All fields (or at least all fields that appear in the invariant) must not be public
 The invariant is assumed to hold for any time the type appears
 
 
