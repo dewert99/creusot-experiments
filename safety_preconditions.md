@@ -227,7 +227,7 @@ fn testA(..., outer_pre: bool) -> Option<T> {
 }
 
 #[requires(pre2B && outer_pre ==> pre1B)]
-#[ensures(match result {None => pre1B ==> uwnB, Some(result) => (post2B && pre1B ==> post1B)})]
+#[ensures(match result {None => uwnB, Some(result) => (post2B && pre1B ==> post1B)})]
 fn testB(..., outer_pre: bool) -> Option<T> {
   let a = ...;
   let res = match testA(..., pre1B) {
