@@ -274,11 +274,10 @@ impl<T> LinkedList<T> {
     #[requires((*self).invariant())]
     #[ensures(result.invariant())]
     #[ensures(result.curr_seq() == (*self).to_seq())]
-    #[ensures(result.fut_inv() ==> result.fut_seq() == (^self).to_seq())]
-    #[ensures(^self == LinkedList{head: *result.head, tail: *result.tail, token: ^*result.full_token})]
-    pub fn iter_mut(&mut self) -> IterMut2<'_, T> {
+    #[ensures(result.fut_inv() ==> (^self).invariant() && result.fut_seq() == (^self).to_seq())]
+    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         let token = &mut self.token;
-        IterMut2 { curr: self.head, token, head: ghost!(self.head), tail: ghost!(self.tail), full_token: ghost!(token)}
+        IterMut { curr: self.head, token, tail: ghost!(self.tail)}
     }
 
     #[requires(self.invariant())]
@@ -326,12 +325,10 @@ fn test() {
     l.drop();
 }
 
-pub struct IterMut2<'a, T>{
+pub struct IterMut<'a, T>{
     curr: Ptr<T>,
     token: &'a mut Token<T>,
-    head: Ghost<Ptr<T>>,
     tail: Ghost<Ptr<T>>,
-    full_token: Ghost<&'a mut Token<T>>
 }
 
 #[predicate]
@@ -339,20 +336,22 @@ fn token_shrink<T>(t: Token<T>, ft: Token<T>) -> bool {
     pearlite!{forall<p: Ptr<T>> (@ft).contains(p) ==> (@t).contains(p)}
 }
 
-impl<'a, T> IterMut2<'a, T> {
+impl<'a, T> IterMut<'a, T> {
 
     #[predicate]
     pub fn invariant(self) -> bool {
-        LinkedList{head: self.curr, tail: *self.tail, token: *self.token}.invariant() && pearlite!{
-            (self.curr != Ptr::null_logic() ==> *self.head != Ptr::null_logic()) &&
-            (LinkedList{head: self.curr, tail: *self.tail, token: ^self.token}.invariant()
-            ==> LinkedList{head: *self.head, tail: *self.tail, token: ^*self.full_token}.invariant()) }
+        LinkedList{head: self.curr, tail: *self.tail, token: *self.token}.invariant()
     }
 
     #[predicate]
     pub fn produces(self, fut: Self) -> bool {
-        self.head == fut.head && self.tail == fut.tail && self.full_token == fut.full_token
+        pearlite!{fut.fut_inv() ==> self.fut_inv()}
     }
+
+    #[law]
+    #[requires(s1.produces(s2) && s2.produces(s3))]
+    #[ensures(s1.produces(s3))]
+    pub fn produces_trans(s1: Self, s2: Self, s3: Self) {}
 
     #[logic]
     #[requires(self.invariant())]
@@ -384,15 +383,12 @@ impl<'a, T> IterMut2<'a, T> {
     #[ensures((*self).produces(^self))]
     pub fn next(&mut self) -> Option<&'a mut T> {
         let old_self = ghost!(self);
-        let IterMut2 { curr, token, ..} = self;
+        let IterMut { curr, token, ..} = self;
         let tail = ghost!(*self.tail);
-        let head = ghost!(*self.head);
-        let full_token = ghost!(*self.full_token);
         if curr.is_null() {
             proof_assert!(self.invariant());
             None
         } else {
-            proof_assert!(*head != Ptr::null_logic());
             let old_token: Ghost<&mut Token<T>>  = ghost!(*token);
             let old_token_m: Ghost<TokenM<T>>  = ghost!(token.model());
             let Node{data, ref next} = curr.reborrow(token);
@@ -421,8 +417,7 @@ impl<'a, T> IterMut2<'a, T> {
     #[requires(self.invariant())]
     #[ensures(self.fut_inv())]
     #[ensures(self.curr_seq() == self.fut_seq())]
-    #[ensures(LinkedList{head: *self.head, tail: *self.tail, token: ^*self.full_token}.invariant())]
     pub fn drop(self) {
-        let IterMut2 { curr, token, ..} = self;
+        let IterMut { curr, token, ..} = self;
     }
 }
