@@ -88,6 +88,10 @@ fn core::hint::unreachable_unchecked()
 #[ensures_always(false)]
 fn core::intrinsics::abort() / std::process::abort()
 
+// keeps default #[unwinds_when(true)]
+#[ensures(*result == *val)]
+fn std::boxed::Box::<T>::new(val: T)
+
 
 #[requires(false)] // This is generally bad, but safe
 // Skips resolving x 
@@ -98,6 +102,118 @@ fn core::mem::forget(x)
 #[requires_safety(x.precondition_safety())]
 #[ensures_always(x.resolve())]
 fn core::mem::drop(x) // This should also automatically be added to locals that go out of scope
+
+#[invariant(x != 0)]
+struct HasInvariant {
+    x: u32
+}
+
+struct DropBomb;
+
+impl Resolve for DropBomb {
+    #[predicate]
+    fn resolve(self) {false}
+
+    #[predicate]
+    fn drop_precondition(self) {false}
+
+    #[predicate]
+    fn drop_precondition_safety(self) { true }
+
+    #[predicate]
+    fn drop_unwinds_when(self) { true }
+}
+
+impl Drop for DropBomb {
+    #[requires(false)]
+    #[ensures_always(false)]
+    fn drop(&mut self) {
+        panic!();
+    }
+}
+
+impl DropBomb {
+    #[trusted]
+    fn forget(self) {
+        std::mem::forget(self);
+    }
+}
+
+fn eg0(var: &mut HasInvariant) { 
+    panic!() // ERROR since we panic even when our precondition holds
+}
+
+#[requires(false)]
+fn eg1(var: &mut HasInvariant) { 
+    panic!() // OK this functions misbehaves but is safe
+}
+
+#[requires(false)]
+fn eg2(var: &mut HasInvariant) { 
+    let x = &mut var.x;
+    *x = 0;
+    panic!() // ERROR this function is unsafe since it can unwind without the invariant holding
+}
+
+#[requires(false)]
+fn eg3(var: &mut HasInvariant) {
+    let guard = DropBomb; // panics on drop
+    let x = &mut var.x;
+    *x = 0;
+    panic!() // OK gaurd with panic on unwinding which becomes an abort
+}
+
+#[safety_requires(false)]
+fn eg4(var: &mut HasInvariant) {
+    let x = &mut var.x;
+    *x = 0;
+    panic!(); // OK safety_requires(false) means anything goes
+}
+
+fn eg5(var: &mut HasInvariant) {
+    let y = Box::new(0); // OK Box::new() may panic but it's a type2 panic so this is ok
+}
+
+#[unwinds_when(false)]
+fn eg6(var: &mut HasInvariant) {
+    let y = Box::new(0); // Error Box::new() may unwind
+}
+
+fn eg7(var: &mut HasInvariant) {
+    let x = &mut var.x;
+    *x = 0;
+    let y = Box::new(0); // ERROR this function is unsafe since it can unwind without the invariant holding
+    *x = 1;
+}
+
+fn eg8(var: &mut HasInvariant) {
+    let guard = DropBomb; // panics on drop
+    let x = &mut var.x;
+    *x = 0;
+    let y = Box::new(0);
+    *x = 1
+    // ERROR dropping guard on the normal path is a type 1 panic
+}
+
+#[requires(false)]
+fn eg9(var: &mut HasInvariant) {
+    let guard = DropBomb; // panics on drop
+    let x = &mut var.x;
+    *x = 0;
+    let y = Box::new(0);
+    *x = 1;
+    // OK we require(false) and this is safe (also not great for users to work with)
+}
+
+fn eg10(var: &mut HasInvariant) {
+    let guard = DropBomb; // panics on drop
+    let x = &mut var.x;
+    *x = 0;
+    let y = Box::new(0);
+    *x = 1;
+    guard.forget(); // takes ownership and forgets guard
+    // OK if Box::new panics gaurd causes an abort, otherwise we fix the invariant and forget guard so we don't panic
+}
 
 
 
@@ -126,55 +242,17 @@ impl<'a, T, F> Drop for DropGuard<'a, T, F> {
 	}
 }
 
-#[ensures(^x >= 0)]
-#[unwinds_when(^x >= 0)]
-fn test(x: &mut i32) {
-	let drop_guard = DropGuard{data: x, f: |x| if *x < 0 {*x = 0;}};
-	let x = &mut drop_guard.data
-	...
-}
-
-
-
-struct AbortBomb;
-
-impl Resolve for AbortBomb {
-	#[predicate]
-	fn resolve(self) {false}
-	
-	#[predicate]
-	fn drop_precondition(self) {false}
-	
-	#[predicate]
-	fn drop_precondition_safety(self) { true }
-	
-	#[predicate]
-	fn drop_unwinds_when(self) { true }
-}
-
-impl Drop for AbortBomb {
-	#[requires(false)]
-	#[ensures_always(false)]
-	fn drop(&mut self) {
-		std::process::abort();
-	}
-}
-
-impl AbortBomb {
-	#[trusted]
-	fn forget(self) {
-		std::mem::forget(self);
-	}
-}
-
-#[unwinds_when(false)]
-fn test2() {
-	let x = AbortBomb;
-	...
-	x.forget()
+#[ensures((^var).x == 1)]
+#[unwinds_when((^var).x == 2)] // true but we probably wouldn't specify this
+fn eg11(var: &mut HasInvariant) {
+    let guard = DropGuard{data: &mut var.x, f: |x| {*x = 2;}}; // fixes invariant on drop
+    *guard.data = 0;
+    let y = Box::new(0); // OK if we unwind the guard's drop will run setting x to 2
+    *guard.data = 1;
+    guard.f = |x| ();
+    // Ok x is now 1 and drop will now do nothing
 }
 ```
-
 
 
 All safe functions have/(must have) `#[requires_safety(true)]`
