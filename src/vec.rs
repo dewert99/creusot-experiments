@@ -156,7 +156,7 @@ impl<T> Vec<T> {
         let mut me = self;
         me.shrink_to_fit();
         let data = me.into_raw_parts().1;
-        transmute::<_, BoxTFn<ArrTFn<AssumeInitTFn>>>(data)
+        transmute(BoxTFn(ArrTFn(AssumeInitTFn)), data)
     }
 }
 
@@ -178,7 +178,7 @@ impl<T> Deref for Vec<T> {
     #[ensures((@result).len() == @self.len)]
     fn deref(&self) -> &Self::Target {
         let init = &self.data[0..self.len];
-        transmute::<_, RefTFn<ArrTFn<AssumeInitTFn>>>(init)
+        transmute(RefTFn(ArrTFn(AssumeInitTFn)), init)
     }
 }
 
@@ -189,7 +189,7 @@ impl<T> DerefMut for Vec<T> {
     #[ensures((^self).invariant())]
     fn deref_mut(&mut self) -> &mut Self::Target {
         let init = &mut self.data[0..self.len];
-        let res = transmute::<_, MutTFn<ArrTFn<AssumeInitTFn>, ArrTFn<MaybeUninitTFn>>>(init);
+        let res = transmute(MutTFn(ArrTFn(AssumeInitTFn), ArrTFn(MaybeUninitTFn)), init);
         proof_assert!(forall<i: Int> 0 <= i && i < (@^init).len() ==> (@^init)[i].is_init());
         proof_assert!(@(^self).len == (@^init).len());
         proof_assert!(forall<i: Int> 0 <= i && i < @(^self).len ==> (@(^self).data)[i] == (@^init)[i]);
@@ -200,7 +200,7 @@ impl<T> DerefMut for Vec<T> {
 impl<T> From<Box<[T]>> for Vec<T> {
     #[ensures(result.invariant())]
     fn from(b: Box<[T]>) -> Self {
-        let data = transmute::<_, BoxTFn<ArrTFn<MaybeUninitTFn>>>(b);
+        let data = transmute(BoxTFn(ArrTFn(MaybeUninitTFn)),b);
         Vec{len: data.len(), data}
     }
 }

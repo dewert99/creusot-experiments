@@ -19,3 +19,13 @@ pub fn unwrap<T>(op: Option<T>) -> T {
         None => unreachable()
     }
 }
+
+pub trait ToRef {
+    // Hack to allow getting references in logical contexts
+    #[logic]
+    fn to_ref(&self) -> &Self {
+        self
+    }
+}
+
+impl<X: ?Sized> ToRef for X {}

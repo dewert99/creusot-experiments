@@ -4,6 +4,7 @@ use ::std::mem;
 use ::std::alloc::{alloc, Layout};
 use ::std::ptr::slice_from_raw_parts_mut;
 use super::transmute::*;
+use crate::helpers::unwrap;
 
 #[trusted]
 pub struct MaybeUninit<T>(mem::MaybeUninit<T>);
@@ -14,12 +15,12 @@ unsafe impl<T> TransmuteFn<T> for MaybeUninitTFn {
     type Output = MaybeUninit<T>;
 
     #[predicate]
-    fn precondition(arg: T) -> bool {
+    fn precondition(self, arg: T) -> bool {
         true
     }
 
     #[predicate]
-    fn postcondition(arg: T, res: Self::Output) -> bool {
+    fn postcondition(self, arg: T, res: Self::Output) -> bool {
         res.model() == Some(arg)
     }
 }
@@ -30,12 +31,12 @@ unsafe impl<T> TransmuteFn<MaybeUninit<T>> for AssumeInitTFn {
     type Output = T;
 
     #[predicate]
-    fn precondition(arg: MaybeUninit<T>) -> bool {
+    fn precondition(self, arg: MaybeUninit<T>) -> bool {
         arg.is_init()
     }
 
     #[predicate]
-    fn postcondition(arg: MaybeUninit<T>, res: Self::Output) -> bool {
+    fn postcondition(self, arg: MaybeUninit<T>, res: Self::Output) -> bool {
         arg.model() == Some(res)
     }
 }
@@ -56,13 +57,19 @@ impl<T> Model for MaybeUninit<T> {
 impl<T> MaybeUninit<T> {
 
     #[predicate]
-    pub fn is_init(&self) -> bool {
+    pub fn is_init(self) -> bool {
         self.model() != None
+    }
+
+    #[logic]
+    #[requires(self.is_init())]
+    pub fn unwrap(self) -> T {
+        unwrap(self.model())
     }
 
     #[ensures(@result == Some(t))]
     pub fn new(t: T) -> Self {
-        transmute::<_, MaybeUninitTFn>(t)
+        transmute(MaybeUninitTFn, t)
     }
 
     #[trusted]
@@ -81,19 +88,19 @@ impl<T> MaybeUninit<T> {
     #[requires(self.is_init())]
     #[ensures(Some(result) == @self)]
     pub fn assume_init(self) -> T {
-        transmute::<_, AssumeInitTFn>(self)
+        transmute(AssumeInitTFn, self)
     }
 
     #[requires(self.is_init())]
     #[ensures(Some(*result) == @self)]
     pub fn assume_init_ref(&self) -> &T {
-        transmute::<_, RefTFn<AssumeInitTFn>>(self)
+        transmute(RefTFn(AssumeInitTFn), self)
     }
 
     #[requires(self.is_init())]
     #[ensures(Some(*result) == @*self && Some(^result) == @^self)]
     pub fn assume_init_mut(&mut self) -> &mut T {
-        transmute::<_, MutTFn<AssumeInitTFn, MaybeUninitTFn>>(self)
+        transmute(MutTFn(AssumeInitTFn, MaybeUninitTFn),self)
     }
 
     #[requires((*self).is_init())]

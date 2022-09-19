@@ -93,12 +93,12 @@ unsafe impl<T: ?Sized> TransmuteFn<HeadDst<(), T>> for HeadDstEraseTFn {
     type Output = T;
 
     #[predicate]
-    fn precondition(arg: HeadDst<(), T>) -> bool {
+    fn precondition(self, arg: HeadDst<(), T>) -> bool {
         true
     }
 
     #[predicate]
-    fn postcondition(arg: HeadDst<(), T>, res: Self::Output) -> bool {
+    fn postcondition(self, arg: HeadDst<(), T>, res: Self::Output) -> bool {
         arg.tail == res
     }
 }
@@ -111,12 +111,12 @@ unsafe impl<T: ?Sized> TransmuteFn<T> for HeadDstCreateTFn {
     type Output = HeadDst<(), T>;
 
     #[predicate]
-    fn precondition(arg: T) -> bool {
+    fn precondition(self, arg: T) -> bool {
         true
     }
 
     #[predicate]
-    fn postcondition(arg: T, res: Self::Output) -> bool {
+    fn postcondition(self, arg: T, res: Self::Output) -> bool {
         arg == res.tail
     }
 }
@@ -129,14 +129,14 @@ unsafe impl<H, T: ?Sized, HT: TransmuteFn<H>, TT: TransmuteFn<T>> TransmuteFn<He
     type Output = HeadDst<HT::Output, TT::Output>;
 
     #[predicate]
-    fn precondition(arg: HeadDst<H, T>) -> bool {
-        HT::precondition(arg.head) && TT::precondition(arg.tail)
+    fn precondition(self, arg: HeadDst<H, T>) -> bool {
+        self.0.precondition(arg.head) && self.1.precondition(arg.tail)
     }
 
     #[predicate]
-    #[requires(Self::precondition(arg))]
-    fn postcondition(arg: HeadDst<H, T>, res: Self::Output) -> bool {
-        HT::postcondition(arg.head, res.head) && TT::postcondition(arg.tail, res.tail)
+    #[requires(self.precondition(arg))]
+    fn postcondition(self, arg: HeadDst<H, T>, res: Self::Output) -> bool {
+        self.0.postcondition(arg.head, res.head) && self.1.postcondition(arg.tail, res.tail)
     }
 }
 
@@ -144,7 +144,7 @@ unsafe impl<H, T: ?Sized, HT: TransmuteFn<H>, TT: TransmuteFn<T>> TransmuteFn<He
 #[ensures(forall<i: Int> 0 <= i && i < @len ==> !(@result)[i].is_init())]
 pub fn new_uninit_box_slice<T>(len: usize) -> Box<[MaybeUninit<T>]> {
     let hdst = HeadDst::new_box((), len);
-    transmute::<_, BoxTFn<HeadDstEraseTFn>>(hdst)
+    transmute(BoxTFn(HeadDstEraseTFn),hdst)
 }
 
 #[ensures((@^b).len() == @new_len)]
@@ -152,6 +152,6 @@ pub fn new_uninit_box_slice<T>(len: usize) -> Box<[MaybeUninit<T>]> {
 #[ensures(@new_len >= (@*b).len() ==> (@^b).subsequence(0, (@*b).len()) == @*b)]
 #[ensures(forall<i: Int> (@*b).len() <= i && i < @new_len ==> !(@^b)[i].is_init())]
 pub fn realloc_box_slice<T>(b: &mut Box<[MaybeUninit<T>]>, new_len: usize) {
-    let hdts_old = transmute::<_, MutTFn<BoxTFn<HeadDstCreateTFn>, BoxTFn<HeadDstEraseTFn>>>(b);
+    let hdts_old = transmute(MutTFn(BoxTFn(HeadDstCreateTFn), BoxTFn(HeadDstEraseTFn)), b);
     HeadDst::realloc(hdts_old, new_len);
 }
