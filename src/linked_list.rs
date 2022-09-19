@@ -107,21 +107,6 @@ fn lseg_trans<T>(ptr1: Ptr<T>, ptr2: Ptr<T>, ptr3: Ptr<T>, token12: TokenM<T>, t
     }
 }
 
-// #[logic]
-// #[requires(len >= 0)]
-// #[requires(lseg(ptr, None, len, token) != None)]
-// #[ensures(result.len() == len)]
-// #[variant(len)]
-// fn ptr_to_seq<T>(ptr: OPtr<T>, len: Int, token: TokenM<T>) -> Seq<T> {
-//     match ptr {
-//         None => Seq::EMPTY,
-//         Some(ptr) => {
-//             let node = token.lookup(ptr);
-//             cons(node.data, ptr_to_seq(node.next, len - 1, token.remove(ptr)))
-//         }
-//     }
-// }
-
 
 
 pub struct LinkedList<T>{
@@ -189,7 +174,6 @@ impl<T> LinkedList<T> {
         let ptr = GhostPtr::from_box_in(val, token);
         proof_assert!(old_self.token.model().remove(*tail).ext_eq(token.model().remove(*tail).remove(ptr)));
         *head = ptr;
-        //proof_assert!(old_self.to_seq() == lseg_seq(old_self.head, *tail, old_self.token.model().remove(*tail)).push(old_self.token.model().lookup(*tail).data));
     }
 
     #[ensures(result.token.model().len() == 0)]
@@ -397,8 +381,6 @@ impl<'a, T> IterMut<'a, T> {
             proof_assert!((@^*old_token).remove(*curr).ext_eq(@^*token));
             proof_assert!(*curr != *tail ==>
                 (@^*token).remove(*tail).ext_eq((@^*old_token).remove(*tail).remove(*curr)));
-            //proof_assert!(lseg_strict(*curr, *next, PMap::empty().insert(*curr, Node{data: ^data, next: *next})));
-            //proof_assert!(*curr != *tail && lseg(*next, *tail, (@^*token).remove(*tail)) ==> lseg(*curr, *tail, (@^*old_token).remove(*tail)));
             proof_assert!(*curr != *tail && lseg_strict(*next, *tail, (@^*token).remove(*tail))
                 ==> lseg_strict(*curr, *tail, (@^*old_token).remove(*tail)));
             *curr = *next;
@@ -407,9 +389,6 @@ impl<'a, T> IterMut<'a, T> {
                 Seq::singleton(^data).concat(self.fut_seq()).ext_eq(old_self.fut_seq()));
             proof_assert!(*next != Ptr::null_logic() ==> Seq::singleton(*data).concat(self.curr_seq()).ext_eq(old_self.curr_seq()));
             proof_assert!(*next != Ptr::null_logic() ==> LinkedList{head: *curr, tail: *tail, token: **token}.invariant());
-            // proof_assert!((@^*token).subset(@**token) && LinkedList{head: *curr, tail: *tail, token: ^*token}.invariant()
-            // ==> LinkedList{head: *head, tail: *tail, token: ^*full_token}.invariant() );
-            // proof_assert!(LinkedList{head: *curr, tail: *tail, token: **token}.invariant());
             Some(data)
         }
     }
