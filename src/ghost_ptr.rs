@@ -149,7 +149,17 @@ impl<T: ?Sized> GhostPtr<T> {
     pub fn reborrow<'o, 'i>(self, t: &'o mut &'i mut GhostToken<T>) -> &'i mut T {
         unsafe { &mut *self.0}
     }
-    // (self, t: &mut GhostToken<T>) -> (&mut T, &mut GhostToken<T>)
+
+    #[requires((@*t).contains(self))]
+    #[ensures(*result.0 == *(@*t).lookup_ghost(self))]
+    #[ensures(@*result.1 == (@*t).remove(self))]
+    #[ensures(@^t == (@^result.1).insert(self, ^result.0))]
+    #[ensures(!(@^result.1).contains(self))]
+    pub fn reborrow2(self, t: &mut GhostToken<T>) -> (&mut T, &mut GhostToken<T>) {
+        let mut t = t;
+        let res0 = self.reborrow(&mut t);
+        (res0, t)
+    }
 
     #[trusted] // shouldn't be needed
     #[requires((@*t).contains(self))]
@@ -189,6 +199,59 @@ impl<T: ?Sized> GhostPtr<T> {
         unsafe { Box::from_raw(self.0) }
     }
 }
+//
+// struct Yoke<F, T, Ys> {
+//     data: Ys,
+//     ptr: Ghost<GhostPtr<T>>,
+//     token: Ghost<GhostToken<T>>,
+//     phantom: PhantomData<F>
+// }
+//
+// trait MyFn<X>: FnOnce(X) -> Self::Out {
+//     type Out;
+// }
+//
+// fn test1<'a, T, F>(f: F, arg: &'a T) -> <F as MyFn<&'a T>>::Out
+// where F: MyFn<&'a T> {
+//     f(arg)
+// }
+//
+// fn test2<'a, 'b, T, F>(f: F, arg1: &'a T, arg2: &'b T) -> (<F as MyFn<&'a T>>::Out, <F as MyFn<&'b T>>::Out)
+//     where F: MyFn<&'a T> + MyFn<&'b T> {
+//     (f(arg1), f(arg2))
+// }
+//
+// fn test2h<T1, T2, F>(f: F, arg1: T1, arg2: T2) -> (<F as MyFn<T1>>::Out, <F as MyFn<T1>>::Out)
+//     where F: MyFn<T1> + MyFn<T2> {
+//     (f(arg1), f(arg2))
+// }
+//
+// fn test2_alt<'a, 'b, T, F>(f: F, arg1: &'a T, arg2: &'b T) -> (<F as MyFn<&'a T>>::Out, <F as MyFn<&'b T>>::Out)
+//     where F: MyFn<&'a T> + MyFn<&'b T> {
+//     test2h::<&'a T, 'b T>(f, arg1, arg2)
+// }
+//
+// unsafe fn transmute_lifetime<'a, 'b, T, F>(from: <F as MyFn<&'a T>>::Out) -> <F as MyFn<&'b T>>::Out
+// where F: MyFn<&'a T> + MyFn<&'b T>{
+//     ::std::mem::transmute_copy(&::std::mem::ManuallyDrop::new(from))
+// }
+//
+// impl<F: FakeFn<&'static T>, T> Yoke<F, T, <F as FakeFn<&'static T,>>::Output> {
+//     #[trusted]
+//     pub fn attach<'a>(ptr: GhostPtr<T>, t: &'a GhostToken<T>, f: F) -> Self
+//     where F: FakeFn<&'a T> {
+//         let param: &'a T = ptr.borrow(&t);
+//         let data = <F as FakeFn<&'a T>>::call(f, param);
+//         Yoke{data: unsafe{transmute::<<F as FakeFn<&'a T>>::Output, <F as FakeFn<&'static T>>::Output>(data)}, ptr: ghost!(ptr), token: ghost!(*t), phantom: PhantomData}
+//     }
+//
+//     #[trusted]
+//     #[requires((@t).get(*self.ptr) == (@self.token).get(*self.ptr))]
+//     pub fn borrow<'a>(self, t: &'a GhostToken<T>) -> <F as FakeFn<&'a T>>::Output
+//         where F: FakeFn<&'a T> {
+//         unsafe {transmute::<<F as FakeFn<&'static T>>::Output, <F as FakeFn<&'a T>>::Output>(self.data)}
+//     }
+// }
 
 #[cfg_attr(not(feature = "contracts"), test)]
 fn test() {
@@ -231,3 +294,9 @@ fn test2<T>(token: &mut GhostToken<T>, ptr1: GhostPtr<T>, ptr2: GhostPtr<T>) -> 
         None
     }
 }
+
+// fn test_yoke() {
+//     let mut t = GhostToken::new();
+//     let ptr = GhostPtr::new_in(5, &mut t);
+//     let yoke = Yoke::attach(ptr, &t, |x| x);
+// }

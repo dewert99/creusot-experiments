@@ -1,4 +1,4 @@
 pub mod transmute;
 pub mod uninit;
-mod invariant_transmute;
-mod drop_guard;
+pub mod invariant_transmute;
+pub mod drop_guard;

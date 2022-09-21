@@ -2,6 +2,8 @@ use creusot_contracts::*;
 use crate::ghost_ptr::*;
 use crate::p_map::PMap;
 use crate::helpers::unwrap;
+use crate::mem::invariant_transmute::*;
+use crate::mem::drop_guard::*;
 
 struct Node<T>{
     data: T,
@@ -258,10 +260,14 @@ impl<T> LinkedList<T> {
     #[requires((*self).invariant())]
     #[ensures(result.invariant())]
     #[ensures(result.curr_seq() == (*self).to_seq())]
-    #[ensures(result.fut_inv() ==> (^self).invariant() && result.fut_seq() == (^self).to_seq())]
+    #[ensures((^self).invariant())]
+    #[ensures(result.fut_seq() == (^self).to_seq())]
     pub fn iter_mut(&mut self) -> IterMut<'_, T> {
-        let token = &mut self.token;
-        IterMut { curr: self.head, token, tail: ghost!(self.tail)}
+        InvToken::<T>::inv_final_lemma;
+        let token_inner = &mut self.token;
+        let inv = ghost!(TokenInv{curr: self.head, tail: self.tail});
+        let token = guard_inv(inv, token_inner);
+        IterMut { curr: self.head, token}
     }
 
     #[requires(self.invariant())]
@@ -302,57 +308,96 @@ fn test() {
     *a += *b;
     *b += *a;
     it.drop();
-    proof_assert!(old_it.fut_inv());
     proof_assert!(l.to_seq()[0] == 13u32);
     proof_assert!(l.to_seq()[1] == 21u32);
     proof_assert!(l.to_seq().len() == 2);
     l.drop();
 }
 
-pub struct IterMut<'a, T>{
+struct TokenInv<T> {
     curr: Ptr<T>,
-    token: &'a mut Token<T>,
-    tail: Ghost<Ptr<T>>,
+    tail: Ptr<T>,
 }
 
-#[predicate]
-fn token_shrink<T>(t: Token<T>, ft: Token<T>) -> bool {
-    pearlite!{forall<p: Ptr<T>> (@ft).contains(p) ==> (@t).contains(p)}
+impl<T> Inv<Token<T>> for TokenInv<T> {
+    #[predicate]
+    fn invariant(self, target: Token<T>) -> bool {
+        LinkedList{head: self.curr, tail: self.tail, token: target}.invariant()
+    }
+}
+
+type InvToken<T> = InvGuard<TokenInv<T>, Token<T>>;
+
+pub struct IterMut<'a, T>{
+    curr: Ptr<T>,
+    token: &'a mut InvToken<T>,
+}
+
+#[logic]
+fn inv_token_seq<T>(t: InvToken<T>) -> Seq<T> {
+    LinkedList{head: t.inv().curr, tail: t.inv().tail, token: t.data}.to_seq()
+}
+
+#[requires(curr != Ptr::null_logic())]
+#[requires(old_token.inv().curr == curr)]
+#[ensures(Seq::singleton(*result.1).concat(inv_token_seq(*result.0)).ext_eq(inv_token_seq(*old_token)))]
+#[ensures(Seq::singleton(^result.1).concat(inv_token_seq(^result.0)).ext_eq(inv_token_seq(^old_token)))]
+#[ensures(result.2 == (*result.0).inv().curr)]
+fn step_token<T>(old_token: &mut InvToken<T>, curr: Ptr<T>) -> (&mut InvToken<T>, &mut T, Ptr<T>) {
+    InvToken::<T>::inv_final_lemma;
+    let old_token_inner = &mut old_token.data;
+    let old_token_inner_g = ghost!(old_token_inner);
+    let old_inv = ghost!(old_token.inv());
+    let tail = ghost!(old_inv.tail);
+    proof_assert!(old_token.inv().invariant(*old_token_inner)); // Manually assume we have the invariant
+    let (Node{ref next, data}, token_inner) = curr.reborrow2(old_token_inner);
+    let inv = ghost!(TokenInv{curr: *next, tail: *tail});
+    proof_assert!(curr != *tail ==> (@*token_inner).remove(*tail).ext_eq((@**old_token_inner_g).remove(*tail).remove(curr)));
+    proof_assert!(curr != *tail ==> (@^token_inner).remove(*tail).ext_eq((@^*old_token_inner_g).remove(*tail).remove(curr)));
+    proof_assert!(curr != *tail ==> (@^token_inner).ext_eq((@^*old_token_inner_g).remove(curr)));
+    let token_inner_g = ghost!(token_inner);
+    let token = guard_inv(inv, token_inner);
+    proof_assert!(old_inv.invariant(^*old_token_inner_g)); // Manually force we uphold the invariant
+    (token, data, *next)
+}
+
+#[requires(curr != Ptr::null_logic())]
+#[requires((**token).inv().curr == curr)]
+#[ensures(Seq::singleton(*result.0).concat(inv_token_seq(*^token)).ext_eq(inv_token_seq(**token)))]
+#[ensures(Seq::singleton(^result.0).concat(inv_token_seq(^^token)).ext_eq(inv_token_seq(^*token)))]
+#[ensures(result.1 == (*^token).inv().curr)]
+fn step_token_inplace<'o, 'i, T>(token: &'o mut &'i mut InvToken<T>, curr: Ptr<T>) -> (&'i mut T, Ptr<T>) {
+    use crate::mem::uninit::*;
+    let g = transmute_to_guard(MaybeUninitTFn, AssumeInitTFn, token);
+    let old_inv = ghost!(g.inv());
+    let m = &mut g.data;
+    let old_token = m.take();
+    let old_token_g = ghost!(old_token);
+    let (new_token, data, ptr) = step_token(old_token, curr);
+    proof_assert!(Seq::singleton(*data).concat(inv_token_seq(*new_token)).ext_eq(inv_token_seq(**old_token_g)));
+    m.write(new_token);
+    proof_assert!(old_inv.invariant(^m)); // Manually force we uphold the invariant
+    (data, ptr)
 }
 
 impl<'a, T> IterMut<'a, T> {
 
     #[predicate]
     pub fn invariant(self) -> bool {
-        LinkedList{head: self.curr, tail: *self.tail, token: *self.token}.invariant()
+        self.curr == self.token.inv().curr
     }
-
-    #[predicate]
-    pub fn produces(self, fut: Self) -> bool {
-        pearlite!{fut.fut_inv() ==> self.fut_inv()}
-    }
-
-    #[law]
-    #[requires(s1.produces(s2) && s2.produces(s3))]
-    #[ensures(s1.produces(s3))]
-    pub fn produces_trans(s1: Self, s2: Self, s3: Self) {}
 
     #[logic]
     #[requires(self.invariant())]
-    #[ensures(result.len() == self.token.model().len())]
+    //#[ensures(result.len() == self.token.data.model().len())]
     pub fn curr_seq(self) -> Seq<T> {
-        LinkedList{head: self.curr, tail: *self.tail, token: *self.token}.to_seq()
-    }
-
-    #[predicate]
-    fn fut_inv(self) -> bool {
-        pearlite!{LinkedList{head: self.curr, tail: *self.tail, token: ^self.token}.invariant()}
+        inv_token_seq(*self.token)
     }
 
     #[logic]
-    #[requires(self.fut_inv())]
+    #[requires(self.invariant())]
     pub fn fut_seq(self) -> Seq<T> {
-        pearlite!{LinkedList{head: self.curr, tail: *self.tail, token: ^self.token}.to_seq()}
+        pearlite!{inv_token_seq(^self.token)}
     }
 
     #[requires((*self).invariant())]
@@ -360,41 +405,22 @@ impl<'a, T> IterMut<'a, T> {
     #[ensures((*self).curr_seq().len() != 0 ==> match result {
         None => false,
         Some(elt) => Seq::singleton(*elt).concat((^self).curr_seq()).ext_eq((*self).curr_seq()) &&
-            ((*self).fut_inv() ==> Seq::singleton(^elt).concat((^self).fut_seq()).ext_eq((*self).fut_seq()))
+            Seq::singleton(^elt).concat((^self).fut_seq()).ext_eq((*self).fut_seq())
     })]
-    #[ensures((^self).fut_inv() ==> (*self).fut_inv())]
     #[ensures((^self).invariant())]
-    #[ensures((*self).produces(^self))]
     pub fn next(&mut self) -> Option<&'a mut T> {
         let old_self = ghost!(self);
         let IterMut { curr, token, ..} = self;
-        let tail = ghost!(*self.tail);
         if curr.is_null() {
-            proof_assert!(self.invariant());
             None
         } else {
-            let old_token: Ghost<&mut Token<T>>  = ghost!(*token);
-            let old_token_m: Ghost<TokenM<T>>  = ghost!(token.model());
-            let Node{data, ref next} = curr.reborrow(token);
-            proof_assert!(*next != Ptr::null_logic() ==> token.model().remove(*tail).ext_eq(old_token_m.remove(*tail).remove(*curr)));
-            proof_assert!(@^*old_token == (@^*token).insert(*curr, Node{data: ^data, next: *next}));
-            proof_assert!((@^*old_token).remove(*curr).ext_eq(@^*token));
-            proof_assert!(*curr != *tail ==>
-                (@^*token).remove(*tail).ext_eq((@^*old_token).remove(*tail).remove(*curr)));
-            proof_assert!(*curr != *tail && lseg_strict(*next, *tail, (@^*token).remove(*tail))
-                ==> lseg_strict(*curr, *tail, (@^*old_token).remove(*tail)));
-            *curr = *next;
-            proof_assert!(self.fut_inv() ==> old_self.fut_inv());
-            proof_assert!(*next != Ptr::null_logic() && old_self.fut_inv() ==>
-                Seq::singleton(^data).concat(self.fut_seq()).ext_eq(old_self.fut_seq()));
-            proof_assert!(*next != Ptr::null_logic() ==> Seq::singleton(*data).concat(self.curr_seq()).ext_eq(old_self.curr_seq()));
-            proof_assert!(*next != Ptr::null_logic() ==> LinkedList{head: *curr, tail: *tail, token: **token}.invariant());
+            let (data, next) = step_token_inplace(token, *curr);
+            *curr = next;
             Some(data)
         }
     }
 
     #[requires(self.invariant())]
-    #[ensures(self.fut_inv())]
     #[ensures(self.curr_seq() == self.fut_seq())]
     pub fn drop(self) {
         let IterMut { curr, token, ..} = self;

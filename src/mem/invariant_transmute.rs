@@ -11,7 +11,7 @@ pub trait Inv<T: ?Sized> {
 #[repr(transparent)]
 pub struct InvGuard<I: Inv<T>, T: ?Sized> {
     inv: Ghost<I>, // final
-    pub(super) data: T,
+    pub(crate) data: T,
 }
 
 pub struct CreateInv<I>(Ghost<I>);
@@ -50,12 +50,12 @@ impl<I: Inv<T>, T: ?Sized> InvGuard<I, T> {
     #[trusted]// Safety the inv field is private and we never change it
     #[law]
     #[ensures((*self).inv == (^self).inv)]
-    fn inv_final_lemma(&mut self) {
+    pub fn inv_final_lemma(&mut self) {
         absurd
     }
 
     #[logic]
-    pub fn inv(self) -> I {
+    pub fn inv(&self) -> I {
         *self.inv
     }
 }
@@ -87,6 +87,7 @@ pub fn transmute_to_guard<T, F1, F2>(t1: F1, t2: F2, from: &mut T) -> &mut InvGu
 #[ensures(inv.invariant(^from))]
 #[ensures((*result).data == *from)]
 #[ensures((^result).data == ^from)]
+#[ensures((*result).inv == inv)]
 pub fn guard_inv<T, I: Inv<T>>(inv: Ghost<I>, from: &mut T) -> &mut InvGuard<I, T> {
     InvGuard::<I, T>::inv_final_lemma;
     transmute(MutTFn(CreateInv(inv), StripInv), from)

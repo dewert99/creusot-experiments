@@ -61,6 +61,7 @@ impl<K, V: ?Sized> PMap<K, V> {
     }
 
     #[logic]
+    #[why3::attr = "inline:trivial"]
     pub fn lookup(self, k: K) -> V
         where V: Sized{
         *unwrap(self.0.get(k))
