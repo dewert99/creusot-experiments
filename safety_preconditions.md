@@ -33,9 +33,6 @@ trait Resolve {
 	// Related http://aidancully.blogspot.com/2021/12/less-painful-linear-types.html type parameters marked as ?ScopeDrop would not have this have this implicit requirement
 	#[predicate]
 	fn drop_precondition(self);
-	
-	#[predicate]
-	fn drop_precondition_safety(self);
 }
 ```
 
@@ -46,8 +43,6 @@ fn resolve_rec<X>(x: X);
 #[predicate]
 fn drop_precondition_rec<X>(x: X);
 #[predicate]
-fn drop_precondition_safety_rec<X>(x: X);
-#[predicate]
 fn drop_unwinds_when_rec<X>(x: X);
 ```
 
@@ -55,9 +50,7 @@ fn drop_unwinds_when_rec<X>(x: X);
 ```rust
 trait Drop {
 	#[requires((*self).drop_precondition())]
-	#[safety_requires((*self).drop_precondition_safety())]
-	#[ensures(drop_precondition_rec(^self)]
-	#[ensures_always(drop_precondition_safety_rec(^self)]
+	#[ensures(drop_precondition_rec(^self))]
 	#[ensures_always(resolve_rec(^self) ==> (*self).resolve())]
 	#[ensures_always(drop_unwinds_when_rec(^self) ==> (*self).drop_unwinds_when())]
 	#[unwinds_when((*self).drop_unwinds_when())]
