@@ -92,11 +92,10 @@ fn core::mem::forget(x)
 
 #[unwinds_when(x.unwinds_when())]
 #[requires(x.precondition())]
-#[requires_safety(x.precondition_safety())]
 #[ensures_always(x.resolve())]
 fn core::mem::drop(x) // This should also automatically be added to locals that go out of scope
 
-#[invariant(x != 0)]
+#[safety_invariant(x != 0)]
 struct HasInvariant {
     x: u32
 }
@@ -109,9 +108,6 @@ impl Resolve for DropBomb {
 
     #[predicate]
     fn drop_precondition(self) {false}
-
-    #[predicate]
-    fn drop_precondition_safety(self) { true }
 
     #[predicate]
     fn drop_unwinds_when(self) { true }
@@ -213,23 +209,20 @@ fn eg10(var: &mut HasInvariant) {
 struct DropGuard<'a, T, F: FnMut(&mut T)>{data: &'a mut T, f: F}
 
 
-impl<'a, T, F> Resolve for DropGuard<'a, T, F> {
+impl<'a, T, F: FnMut(&mut T)> Resolve for DropGuard<'a, T, F> {
 	#[predicate]
 	fn resolve(self) {self.f.postcondition_mut((self.data,), ())}
 	
 	#[predicate]
-	fn drop_precondition(self) {self.f.precondition((*(self.data),), ())}
+	fn drop_precondition(self) {self.f.precondition((self.data,), ())}
 	
 	#[predicate]
-	fn drop_precondition_safety(self) { true }
-	
-	#[predicate]
-	fn drop_unwinds_when(self) { true }
+	fn drop_unwinds_when(self) { true } // f.unwinding_postcondition((self.data,)) // if this was added
 }
 
-impl<'a, T, F> Drop for DropGuard<'a, T, F> {
+impl<'a, T, F: FnMut(&mut T)> Drop for DropGuard<'a, T, F> {
 	#[requires((*self).f.precondition((*((*self).data),), ()))]
-	#[ensures_always(*((^self).data) == ^((^self).data) ==> (*self).f.postcondition_mut(((*self).data,), ())]
+	#[ensures_always(*((^self).data) == ^((^self).data) ==> (*self).f.postcondition_mut(((*self).data,), ()))]
 	fn drop(&mut self) {
 		(self.f)(self.data)
 	}
@@ -241,6 +234,7 @@ fn eg11(var: &mut HasInvariant) {
     let guard = DropGuard{data: &mut var.x, f: |x| {*x = 2;}}; // fixes invariant on drop
     *guard.data = 0;
     let y = Box::new(0); // OK if we unwind the guard's drop will run setting x to 2
+    // if the guard's drop panics we will abort which is fine
     *guard.data = 1;
     guard.f = |x| ();
     // Ok x is now 1 and drop will now do nothing
@@ -291,52 +285,84 @@ fn testB(...) -> T {
 ---------------------------------------------->
 
 ```rust
-#[requires(pre2A && outer_pre ==> pre1A)]
+const WELL_BEHAVED: bool = any_bool(); // Uninterpreted constant 
+
+#[requires(pre2A && WELL_BEHAVED ==> pre1A)]
 #[ensures(match result {None => uwnA, Some(result) => (post2A && pre1A ==> post1A)})]
-fn testA(..., outer_pre: bool) -> Option<T> {
+fn testA(...) -> Option<T> {
   ...
 }
 
-#[requires(pre2B && outer_pre ==> pre1B)]
+#[requires(pre2B && WELL_BEHAVED ==> pre1B)]
 #[ensures(match result {None => uwnB, Some(result) => (post2B && pre1B ==> post1B)})]
-fn testB(..., outer_pre: bool) -> Option<T> {
-  let a = ...;
-  let res = match testA(..., pre1B) {
-	None => {
-	  match drop(a, false) { // use false as the outer_pre since we are unwinding anyways
-		None => assume false // we abort on double panic (if we wanted to forbid aborts this would be assert false)
-		Some(x) => x,
-	  };
-	  // same for other locals
-	  return None
-	},
-	Some(x) => x
-  }
-  match drop(a, pre1B) {
-	None => {
-	  // unwind drop locals that still need dropping
-	  return None
-	},
-	Some(x) => x
-  };
-  // same for other locals
-  return Some(res)
+fn testB(...) -> Option<T> {
+    let a = ...;
+    let res = match testA(...) { 
+        None => {
+            assume(!WELL_BEHAVED);
+            match drop(a, false) {  // use false as the outer_pre since we are unwinding anyways
+                None => assume(false),  // we abort on double panic (if we wanted to forbid aborts this could be assert false)
+                Some(x) => x, 
+            }; 
+            // same for other locals
+            return None 
+        }, 
+        Some(x) => x 
+    };
+    match drop(a, pre1B) { 
+        None => { 
+            // drop locals that still need dropping
+            return None 
+        }, 
+        Some(x) => x 
+    }; 
+    // same for other locals
+    return Some(res)
 }
 ```
+In other words
+`#[requires(pre1)]` desugars to `#[requires_safety(WELL_BEHAVED ==> pre1)]`
+`#[ensures(post1)]` desugars to `#[always_ensures(pre1 ==> post1)]`
+it would also be good to have
+`proof_assert!(x)` desugar to `proof_assert_always!(pre1 ==> x)!`
+
 ## trusted and unsafe_trusted
-`#[trusted]` should change the last arg of calls (outer_pre) made from pre1 to false
+`#[trusted]` should add `assume(!WELL_BEHAVED)` to the top of the function
 This allows panicking and bad behaviour but not memory unsafety
 In a `#[trusted]` functions the `assert!` macro can be used like an `assume` that's runtime checked.
 
 `#[unsafe_trusted]` should be used to completely skip verification
+(Equivalent to adding `assume(false)` to the top of the function)
 
 
-## Safety Invariant Handling
-Constructing a type with an invariant asserts the invariant (as a safety precondition)
+## Invariant Handling
+Constructing a type with a safety invariant asserts the invariant
 Functions that destructure a mutable reference to a type with an invariant must reassert the invariant added anytime the lifetime of the destructure ends (even during unwinding)
 If the lifetime extends beyond the length of the function then the invariant must be asserted wherever the functions returns (even during unwinding)
 All fields (or at least all fields that appear in the invariant) must not be public
 The invariant is assumed to hold for any time the type appears
+
+`#[invariant(inv)]` could just be sugar for `#[safety_invariant(WELL_BEHAVED ==> inv)]`
+This is slightly weak since we couldn't use invariant information in postconditions
+We could potentially change `#[ensures(post)]` to desugar to `#[always_ensures(WELL_BEHAVED ==> post)]`,
+but this is weaker meaning that (regular) postcondtions would never help with satisfying safety_preconditions.
+We could also add `#[ensures_weak(post)]` that desugars to `#[always_ensures(WELL_BEHAVED ==> post)]`,
+this would further increase the number of annotations (but maybe this is fine since most of them are just sugar)
+(Note there would be similar issues for `proof_assert!`)
+
+## Require on expiry
+The mutable invariant rules could be generalized to a different type of precondition (like Prusti's assert_on_expiry)
+the caller would have the same obligations as if the function result came from mutably destructuring a type with an invariant
+the callee could assume that the requirement holds at the very end of the function (useful for satisfying invariants and other require_on_expiry)
+Once use case of this would be to allow types with invariants to give mutable access to their fields in a public function.
+Like regular preconditions `#[requires_on_expiry(post)]` would desugar to `#[requires_on_expiry_safety(WELL_BEHAVED ==> post)]`
+and any function with `#[requires_on_expiry_safety(post)]` would be unsafe.
+
+## Traits
+Any traits with functions with postconditions should be unsafe since they are unsafe to implement in general.
+Standard traits with associate *Spec  traits are an exception the spec trait should be considered
+unsafe instead. (Resolve can be seen as DropSpec, and Model can be seen as EqSpec and OrdSpec and should also be CloneSpec)
+
 
 
 ## Safe vs Allow_Unsafe (possible verifications modes)
@@ -349,5 +375,7 @@ In safe mode:
 * trusted functions allow explicit panics (but are otherwise unchanged)
 * unsafe_trusted functions are forbidden
 * unsafe blocks are forbidden
-Crates/Modules in standard mode could call safe functions without requires_safety using the regular requires as the precondition and the conjunction of ensures clauses as the post-condition
+Crates/Modules in standard mode could call safe functions (without requires_safety) using the regular requires as the precondition and the conjunction of ensures clauses as the post-condition
+Essentially this would be assuming `WELL_BEHAVED` everywhere and forbidding anything that would require proveing something other than `WELL_BEHAVED => _`
 Crates/Modules in allow_unsafe mode could call safe functions using the specs as if they were written in allow_unsafe mode
+Note this would be worth it only if it gave better performance, otherwise users could just avoid the safety_features when they don't need them.
