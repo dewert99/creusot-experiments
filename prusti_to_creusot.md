@@ -35,7 +35,7 @@ at_ts(ts, match exp1 {(pats => exps)...}) => match at_ts(ts, exp) {(pats => at_t
 // If and let can be thougt of like match
 as_tes(ts, lit) => lit
 at_ts(ts, *exp_ref) => *at_rs(exp_ref)
-// Note coercing a mutable reference to a shared reference counts as  
+// Note coercing a mutable reference to a shared reference counts as derefrencing
 at_ts(old, *param<'a>) => *param
 at_ts(curr, *result) => *result
 at_ts(curr, *param<'c>) => ^param
@@ -81,7 +81,7 @@ at_ts(ts, match exp1 {(pats => exps)...}) => match at_ts(ts, exp) {(pats => at_t
 as_tes(ts, lit) => lit
 at_ts(ts, *exp_ref) => *at_rs(exp_ref)
 as_ts(ts, *exp_ref) => deref_at_ts(ts, at_ts(ts, exp_ref))
-as_tes(ts, id) => id
+as_ts(ts, id) => id
 
 polarity: pearlite_exp -> set polarity
 
