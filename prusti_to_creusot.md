@@ -99,13 +99,20 @@ polarity(f(pearlite_exp...)) -> {old, curr} // This could also be improved by in
 deref_at_ts: ts, pearlite_exp_mut, polarity? -> pearlite_exp | Compile Error
 
 deref_at_ts(ts, pearlite_exp_mut) => deref_at_ts(ts, pearlite_exp_mut, home(pearlite_exp_mut))
-deref_at_ts(exiry<'a>, pearlite_exp_mut<'a>, {tss ...}) => ^pearlite_exp_mut
+deref_at_ts(expiry<'a>, pearlite_exp_mut<'a>, {expiry<'a>}}) => *pearlite_exp_mut 
+// ~^ This could go either way as these *pearlite_exp_mut should be known equal to ^pearlite_exp_mut
 deref_at_ts(ts, pearlite_exp_mut, {ts}) => *pearlite_exp_mut
+deref_at_ts(expiry<'a>, pearlite_exp_mut<'a>, {tss, ...}) => ^pearlite_exp_mut
 deref_at_ts(ts, *exp, polarity) => Compile Error
 ```
 Note: Even in this version doesn't support mutable de-referencing within pure/logical functions 
+TODO: Find method of determining which mutable references are known to have `*x == ^x` purely from the signature
+(This is true when their `home` is `expiry<'a>` where `'a` is their lifetime)
+These equalities should be added as premises to the all the postconditions.
+
 ## Examples
 Assume we can determine sequence operations preserve polarity
+### Eg1
 ```rust
 #[requires((@s).len() > 0)]
 #[ensures(*result == old((@s)[0]))]
@@ -115,6 +122,7 @@ pub fn split_off_front<'i, 'o, T>(s: &'o mut &'i mut [T]) -> &'i mut T {
     ..
 }
 ```
+![test1_image](resources/test1.png)
 ```
 at_ts(curr, *result == old((@**s)[0]))
 at_ts(curr, *result) == at_ts(curr, old((@**s)[0]))
@@ -168,6 +176,7 @@ at_ts(expiry<'i>, @*old(*s)) == at_ts(expiry<'i>, concat(singleton(*result), @*c
 @at_ts_deref(expiry<'i>, *s, {old}) == concat(singleton(^result), @at_ts_deref(expiry<'i>, ^s, {expiry<'o>}))
 @^*s == concat(singleton(^result), @^^s)
 ```
+### Eg2
 Assume we can determine `last` and `unwrap` preserve polarity
 ```rust
 #[requires(vec1.last() != None)]
@@ -180,6 +189,7 @@ fn test<'c, 'a>(vec1: &'c mut Vec<&'a mut u32>, vec2: &'c mut Vec<&'a mut u32>) 
     vec2.push(x)
 }
 ```
+![test2_image](resources/test2.png)
 ```
 at_ts(curr, *unwrap(last(*vec2)) == 1 + old(*unwrap(last(1vec2))))
 at_ts(curr, *unwrap(last(*vec2))) == at_ts(1) + at_ts(curr, old(*unwrap(last(*vec1))))
@@ -215,6 +225,7 @@ at_ts_deref(expiry<'a>, unwrap(last(*vec1)), home(vec1)) == at_ts_deref(expiry<'
 at_ts_deref(expiry<'a>, unwrap(last(*vec1)), {old}) == at_ts_deref(expiry<'a>, unwrap(last(^vec2)), {expiry<'c>})
 ^unwrap(last(*vec1)) == ^unwrap(last(^vec2))
 ```
+### Eg3
 ```rust
 #[ensures(**result == old(**x + 1))]
 #[after_expiry<'i>(before_exiry(*curr(*result)) == *old(*x))]
@@ -226,6 +237,7 @@ fn test<'o, 'i>(x: &'o mut &'i mut u32) -> &'o mut &'i mut u32 {
     x
 }
 ```
+![test3_image](resources/test3.png)
 ```
 at_ts(curr, **result == old(**x + 1))
 at_ts(curr, **result) == at_ts(curr, old(**x + 1)) 
@@ -285,6 +297,18 @@ at_ts_deref(expiry<'i>, ^result, home(^result)) == at_ts_deref(expiry<'i>, ^x, h
 at_ts_deref(expiry<'i>, ^result, {expiry<'o>}) == at_ts_deref(expiry<'i>, ^x, {expiry<'o>})
 ^^result == ^^x
 ```
+### Eg4 (Fails)
+```rust
+#[requires((@s).len() > 0)]
+#[ensures(*result == old((@s)[0]))]
+#[after_expiry<'o>(@old(*s) == old(@s).set(0, *result))] 
+pub fn split_off_front<'o, T>(s: &'o mut &'o mut [T]) -> &'o mut T {
+    ..
+}
+```
+Note this example would need to detect the addition premise `*^s == ^^s`
+![test4_image](resources/test4.png)
+### Eg5 (Fails)
 Note: This would still would fail with something like
 ```rust
 #[ensures(*(if b {arg} else {result}) == 5)]
