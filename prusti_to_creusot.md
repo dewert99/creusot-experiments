@@ -114,7 +114,9 @@ fn get<K, V>(map: Map<K, V>, key: K) -> V;
 fn put<K, V>(map: Map<K, V>, key: K, val: V) -> Map<K, V>;
 ```
  * It may be useful to have a default "home signature", possibly:
-   * All parameters with lifetimes (or type parameters from an impl block including `Self`) in the type must have there home in the current time slice
+   * All arguments with lifetimes in the type must have there home in the current time slice
+   * In trait definitions, all arguments with type involving `Self` or a trait type parameter also must have there home in the current time slice
+     * In case we want to instantiate them with a mutable references
    * Other parameters don't care
    * The return value must have it's home come an argument with at least one matching type/lifetime parameter
      * If the return type is completely concrete it's home must be {}
@@ -132,7 +134,7 @@ TODO: Decide if and how to allow types with multiple homes
   * Con: Doesn't allow multiple homes to escape a match expression or function call
 * Tuple Only
   * Allow each field of a tuple to have a different home
-  * Still force structs an enums to have a single home (modulo tuple type parameters)
+  * Still force structs an enums to have a single home
   * Pro: Allow multiple homes to escape a match expression or function call
   * Pro: Sidesteps structural vs nominal issue
   * Con: Causes inconsistency between behaviour of tuples and structs
@@ -142,12 +144,41 @@ TODO: Decide if and how to allow types with multiple homes
 fn test<X>(x: (X, X), y: X) -> (X, X) {
     (x.0, y)
 }
-// Note using `'x` on an argument of type (_, _) would desugar to `('x, 'x)` 
+```
+```rust
+// Note using `'x` on an argument of type (_, _) could desugar to `('x, 'x)` 
+// This would help with backwards compatibility and be convenient but cause the following issue
+// the same issue would also apply to later options
+#[logic(<'x>('x) -> 'x)]
+// #[logic(<'x>(('x, 'x)) -> 'x)] // Desugared
+fn test<X>(x: (X, X)) -> X{
+    x.0
+}
+#[logic(<'x, 'y>(('x, 'y)) -> ('x, 'y))] // FAIL
+// #[logic(<'x, 'y>((('x, 'x), ('y, 'y))) -> ('x, 'y))] // Desugared
+fn test2<X>(x: ((X, X), (X, X))) -> (X, X){
+    test(x)
+}
+```
+```rust
+// There is also somewhat unexpected behaviour when using tuples as type parameters
+#[logic(<'x>('x) -> 'x)]
+fn some<X>(x: X) -> Option<X>{
+    Some(x)
+}
+// What signature should go here
+//#[logic(<'x, 'y>(('x, 'y)) -> ('x, 'y))] ??? // This would not play nicely with further extensions
+#[logic(<'x, 'y>(('x, 'x)) -> 'x)] // This is less precise but fits with  Tuple Only
+fn test<X, Y>(x: (X, Y))-> Option<(X, Y)>{
+    some(x)
+}
 ```
 * Nominal
   * Allow each type parameter to have a different home
   * Eg `Type1<X>(X, X)` fields share a home but `Type2<X, Y>(X, Y)` they can be different
-  * Question: Do we allow the same type parameter to have the same home between different arguments?
+  * Question: Do we allow the same type/lifetime parameter to have the same home between different arguments?
+    * They will probably be the same if there is no dereferencing but otherwise might need to be different
+    * We could still copy the type/lifetime as a default "home signature"
   * Pro: Feels most Rust like
   * Con: Probably more difficult to implement
   * Could look like (assume we allow the above question)
@@ -160,11 +191,32 @@ fn test<X>(x: Test<X, X>) -> (X, X) {
 }
 // Note using `'x` on an argument of type Test would desugar to `Test<'x, 'x>` 
 ```
+```rust
+struct Test2<'a, 'b>(&'a mut u32, &'b mut u32);
+
+#[logic(<'x>(Test2<'x, '_>) -> 'x)]
+fn test<'a>(x: Test2<'a, '_>) -> &'a mut u32 {
+    x.0
+}
+// "home" parameters would need to replace both type and lifetime parameters
+// to enable distinguishing the homes of fields that only vary by lifetime
+```
+```rust
+struct Test3<'a, X>(&'a mut X);
+
+#[logic(<'x>(Test3<'x, '_>) -> 'x)]
+fn test<'a, X>(x: Test2<'a, X>) -> &'a mut X{
+    x.0
+}
+// Since the home of a dereference is always the current time slice 
+// "home" parameters that only appear under a reference are meaningless
+```
 
 * Structural
   * Allow each field to have a different home
   * More flexible than Nominal
-  * Similar implementation difficulty to Tuple Only
+  * Pro: Simple extension of Tuple Only
+  * Con: How does this work with enums?
   * Could look like (assume we allow the above question)
 ```rust
 struct Test<X, Y>(X, X, Y);
