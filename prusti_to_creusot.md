@@ -35,38 +35,152 @@ at_ts(ts, exp.field) => at_ts(ts, exp).field
 // note getting a field from a mutable refererence should be desugared to (*exp).field
 at_ts(ts, match exp1 {(pats => exps)...}) => match at_ts(ts, exp) {(pats => at_ts(ts, exps) ...)}
 // If and let can be thougt of like match
-as_tes(ts, lit) => lit
+at_ts(ts, lit) => lit
 at_ts(ts, *exp_ref) => *at_rs(exp_ref)
-as_ts(ts, *exp_mut) => deref_at_ts(ts, at_ts(ts, exp_mut))
+as_ts(ts, *exp_mut) => deref_at_ts(ts, at_ts(ts, exp_mut), home(ts, exp_mut))
 // Note coercing a mutable reference to a shared reference counts as derefrencing
 as_ts(ts, id) => id
 
-home: pearlite_exp -> set ts
+home: ts, exp -> set ts
 
-home(lit) -> {}
-home(param) -> {old}
-home(result) -> {curr}
-home(id) -> //polarity of the type id was bound to
-home(pearlite_exp.field) -> home(pearlite_exp)
+home(ts, lit) -> {}
+home(ts, param) -> {old}
+home(ts, result) -> {curr}
+home(ts, id) -> //polarity of the type id was bound to
+home(ts, pearlite_exp.field) -> home(pearlite_exp)
 home(ts, match exp1 {(pats => exps)...}) => union(polarity(exps...))
-home(*pearlite_exp) -> home(pearlite_exp)
-home(^pearlite_exp_mut<'a>) -> {expiry<'a>}
-polarity(f(pearlite_exp...)) -> {old, curr} // This could also be improved by inlining and/or paramatricity tricks
+home(ts, old(exp) -> home(old, exp)
+home(ts, *exp) -> ts
+home(ts, f(exp...)) -> {old, curr} // This could also be improved by inlining and/or paramatricity tricks
 
-deref_at_ts: ts, pearlite_exp_mut, polarity? -> pearlite_exp | Compile Error
 
-deref_at_ts(ts, pearlite_exp_mut) => deref_at_ts(ts, pearlite_exp_mut, home(pearlite_exp_mut))
+deref_at_ts: ts, pearlite_exp_mut, home -> pearlite_exp | Compile Error
 deref_at_ts(expiry<'a>, pearlite_exp_mut<'a>, {expiry<'a>}}) => *pearlite_exp_mut 
 // ~^ This could go either way as these *pearlite_exp_mut should be known equal to ^pearlite_exp_mut
 deref_at_ts(ts, pearlite_exp_mut, {ts}) => *pearlite_exp_mut
 deref_at_ts(expiry<'a>, pearlite_exp_mut<'a>, {tss, ...}) => ^pearlite_exp_mut
 deref_at_ts(ts, *exp, polarity) => Compile Error
 ```
-Note: Even in this version doesn't support mutable de-referencing within pure/logical functions.
 
 TODO: Find method of determining which mutable references are known to have `*x == ^x` purely from the signature
 (this is true when their `home` is `expiry<'a>` where `'a` is their lifetime).
 These equalities should be added as premises to the all the postconditions.
+
+TODO: Better handle calling logic/pure functions with a "home signature"
+ * This would need to describe the expected homes of the parameters eg.
+   * Home must be the expriy of a given lifetime parameter
+   * Home must match the time slice the function is called in
+   * Home doesn't matter (we will never dereference this)
+ * It would also need to list which parameters may contribute to the home of the return value
+ * Could look something like:
+
+ ```rust
+#[logic(('curr) -> 'curr)]
+fn stubs::cur<T>(x: &mut T) -> T {
+    *x // Translates to Cruesot *x
+}
+
+#[logic(('_) -> 'curr)]
+fn stubs::fin<'curr, T>(x: &'curr mut T) -> T {
+    *x // Translates to Cruesot ^x
+}
+
+#[logic(<'x>('x) -> 'x), where 'curr: 'x]
+fn force_cur<'a, T>(x: &'a mut T) {
+    expiry::<'x>(*x)
+}
+
+#[logic(('_) -> 'a)]
+fn force_fin<'a, T>(x: &'a mut T) {
+    expiry::<'a>(*x) // This would probably be a step forward (is this allowed?)
+}
+
+
+#[logic(('_, '_) -> '!)] // '! means that the home is meaningless (subtype of everything)
+fn eq<X>(x: X, y: X) -> bool {
+    x == y
+}
+
+#[logic(('curr) -> 'curr)] // Allow &mut to implement model
+fn model(self) -> Self::ModelTy;
+
+#[logic(<'x>('x, '_, '_) -> '!), where 'curr: 'x]
+fn postcondtion_mut<'curr, F: FnMut(Args) -> Out, Args, Out>(f: &'curr mut F, args: Args, res: Out) -> bool;
+
+#[logic(<'x>('x, _) -> 'x)]
+fn get<K, V>(map: Map<K, V>, key: K) -> V;
+
+#[logic(<'x>('x, 'x, 'x) -> 'x)]
+fn put<K, V>(map: Map<K, V>, key: K, val: V) -> Map<K, V>;
+```
+ * It may be useful to have a default "home signature", possibly:
+   * All parameters with lifetimes (or type parameters from an impl block including `Self`) in the type must have there home in the current time slice
+   * Other parameters don't care
+   * The return value must have it's home come an argument with at least one matching type/lifetime parameter
+     * If the return type is completely concrete it's home must be {}
+ * We also might need to handle function defined in plain Creusot without a "home signature" 
+   * We could allow them but keep the return home {old, curr} (eg. unknown) or forbid them entirely which
+   * We may be able to prove that pure functions can use the default signature
+ * We need to decide whether to allow weak "home signatures" that don't pin down where a mutable dereference becomes a * or a ^ and translate them into multiple Creusot functions
+   * We also might want to allow function with "home signatures" that do pin this down to be callable in plain Creusot
+
+TODO: Decide if and how to allow types with multiple homes
+* Don't
+  * All types have a single home
+  * This is what was used everywhere above
+  * Pro: Simple and easy to deal with
+  * Con: Doesn't allow multiple homes to escape a match expression or function call
+* Tuple Only
+  * Allow each field of a tuple to have a different home
+  * Still force structs an enums to have a single home (modulo tuple type parameters)
+  * Pro: Allow multiple homes to escape a match expression or function call
+  * Pro: Sidesteps structural vs nominal issue
+  * Con: Causes inconsistency between behaviour of tuples and structs
+  * Could look like
+```rust
+#[logic(<'x>(('x, '_), 'y) -> ('x, 'y))]
+fn test<X>(x: (X, X), y: X) -> (X, X) {
+    (x.0, y)
+}
+// Note using `'x` on an argument of type (_, _) would desugar to `('x, 'x)` 
+```
+* Nominal
+  * Allow each type parameter to have a different home
+  * Eg `Type1<X>(X, X)` fields share a home but `Type2<X, Y>(X, Y)` they can be different
+  * Question: Do we allow the same type parameter to have the same home between different arguments?
+  * Pro: Feels most Rust like
+  * Con: Probably more difficult to implement
+  * Could look like (assume we allow the above question)
+```rust
+struct Test<X, Y>(X, X, Y);
+
+#[logic(<'x>(Test<'x, '_>) -> ('x, 'x))]
+fn test<X>(x: Test<X, X>) -> (X, X) {
+    (x.0, x.1)
+}
+// Note using `'x` on an argument of type Test would desugar to `Test<'x, 'x>` 
+```
+
+* Structural
+  * Allow each field to have a different home
+  * More flexible than Nominal
+  * Similar implementation difficulty to Tuple Only
+  * Could look like (assume we allow the above question)
+```rust
+struct Test<X, Y>(X, X, Y);
+
+#[logic(<'x>(Test('x, 'x, '_)) -> ('x, 'x))]
+fn test<X>(x: Test<X, X>) -> (X, X) {
+    (x.0, x.1)
+}
+// Note using `'x` on an argument of type Test would desugar to `Test('x, 'x, 'x)` 
+```
+* Dynamic
+  * Structural + allow elements of arrays/slices to have different homes
+  * Also allow arbitrary logic code to be inserted into a "home signature"
+  * Pro: Maximally Flexible
+  * Con: Requires passing home information into the VCs and turning compiler errors into verification errors
+  * Con: "home signatures" would become very complicated
 
 TODO?: Determine whether to accept before vs after expiry
 
@@ -99,32 +213,23 @@ at_ts(curr, *result) == at_ts(curr, old((@**s)[0]))
 at_ts(curr, *result) == at_ts(old, (@**s)[0])
 at_ts(curr, *result) == (@at_ts(old, **s))[at_ts(old, 0)]
 at_ts(curr, *result) == (@at_ts(old, **s))[at_ts(old, 0)]
-at_ts_deref(curr, at_ts(curr, result)) == (@at_ts_deref(old, at_ts(old, *s)))[at_ts(old, 0)]
-at_ts_deref(curr, result) == (@at_ts_deref(old, at_ts_deref(old, at_ts(old, s))))[0]
-at_ts_deref(curr, result, home(result)) == (@at_ts_deref(old, at_ts_deref(old, s)))[0]
-at_ts_deref(curr, result, {curr}) == (@at_ts_deref(old, at_ts_deref(old, s, home(s))))[0]
-*curr == (@at_ts_deref(old, at_ts_deref(old, s, {old})))[0]
-*curr == (@at_ts_deref(old, *s))[0]
-*curr == (@at_ts_deref(old, *s, home(*s)))[0]
-*curr == (@at_ts_deref(old, *s, home(s)))[0]
-*curr == (@at_ts_deref(old, *s, {old}))[0]
-*curr == (@**s)[0]
+at_ts_deref(curr, at_ts(curr, result), home(curr, result)) == (@at_ts_deref(old, at_ts(old, *s), home(old, *s)))[at_ts(old, 0)]
+at_ts_deref(curr, result, {curr}) == (@at_ts_deref(old, at_ts(old, *s), {old}))[0]
+*result == (@*at_ts(old, *s))[0]
+*result == (@*at_ts_deref(old, at_ts(old, s), home(old, s))[0]
+*result == (@*at_ts_deref(old, at_ts(old, s), {old})[0]
+*result == (@**s)[0]
 ```
 ```
 at_ts(curr, @**s == old(subsequence(@**s, 1, len(@**s))))
 at_ts(curr, @**s) == at_ts(curr, old(subsequence(@**s, 1, len(@**s))))
 at_ts(curr, @**s) == at_ts(old, subsequence(@**s, 1, len(@**s)))
 @at_ts(curr, **s) == subsequence(@at_ts(old, **s), at_ts(old, 1), len(@at_ts(old, **s)))
-@at_ts_deref(curr, at_ts(curr, *s)) == subsequence(@at_ts_deref(old, at_ts(old, *s)), 1, len(@old, at_ts_deref(old, at_ts(old, *s))))
-@at_ts_deref(curr, at_ts_deref(curr, at_ts(curr, s))) == subsequence(@at_ts_deref(old, at_ts_deref(old, at_ts(old, s))), 1, len(@at_ts(old, at_ts_deref(old, at_ts_deref(old, at_ts(old, s))))))
-@at_ts_deref(curr, at_ts_deref(curr, s)) == subsequence(@at_ts(old, at_ts_deref(old, at_ts_deref(old, s))), 1, len(@old, at_ts_deref(old, at_ts_deref(old, s))))
-@at_ts_deref(curr, at_ts_deref(curr, s, home(s))) == subsequence(@at_ts(old, at_ts_deref(old, at_ts_deref(old, s, home(s)))), 1, len(@at_ts(old, at_ts_deref(old, at_ts_deref(old, s, home(s))))))
-@at_ts_deref(curr, at_ts_deref(curr, s, {old})) == subsequence(@at_ts(old, at_ts_deref(old, at_ts_deref(old, s, {old}))), 1, len(@at_ts(old, at_ts_deref(old, at_ts_deref(old, s, {old})))))
-@at_ts_deref(curr, at_ts_deref(expiry<'o>, s, {old})) == subsequence(@at_ts(old, at_ts_deref(old, at_ts_deref(old, s, {old}))), 1, len(@at_ts(old, at_ts_deref(old, at_ts_deref(old, s, {old})))))
-@at_ts_deref(curr, ^s) == subsequence(@at_ts_deref(old, *s), 1, len(@at_ts_deref(old, *s)))
-@at_ts_deref(curr, ^s, home(^s)) == subsequence(@at_ts_deref(old, *s, home(*s)), 1, len(@at_ts_deref(old, *s, home(*s))))
-@at_ts_deref(curr, ^s, {expiry<'o>}) == subsequence(@at_ts_deref(old, *s, home(s)), 1, len(@at_ts_deref(old, *s, home(s))))
-@at_ts_deref(curr, ^s, {curr}) == subsequence(@at_ts_deref(old, *s, {old}), 1, len(@at_ts_deref(old, *s, {old})))
+@at_ts_deref(curr, at_ts(curr, *s), home(curr, *s)) == subsequence(@at_ts_deref(old, at_ts(old, *s), home(old, *s)), 1, len(@at_ts_deref(old, at_ts(old, *s), home(old, *s))))
+@at_ts_deref(curr, at_ts(curr, *s), {curr}) == subsequence(@at_ts_deref(old, at_ts(old, *s), {old}), 1, len(@at_ts_deref(old, at_ts(old, *s), {old})))
+@*at_ts(curr, *s) == subsequence(@*at_ts(old, *s), 1, len(@*at_ts(old, *s)))
+@*at_ts_deref(curr, at_ts(curr, s), home(curr, s)) == subsequence(@*at_ts_deref(old, at_ts(old, s), home(old, s)), 1, len(at_ts_deref(old, at_ts(old, s), home(old, s))))
+@*at_ts_deref(curr, s, {old}) == subsequence(@*at_ts_deref(old, s, {old}), 1, len(at_ts_deref(old, s, {old})))
 @*^s == subsequence(@**s, 1, len(@**s))
 ```
 ```
@@ -133,19 +238,18 @@ at_ts(expiry<'i>, @*old(*s)) == at_ts(expiry<'i>, before_expiry(concat(singleton
 at_ts(expiry<'i>, @*old(*s)) == at_ts(expiry<'i>, concat(singleton(*result), @*curr(*s)))
 at_ts(expiry<'i>, @*old(*s)) == at_ts(expiry<'i>, concat(singleton(*result), @*curr(*s)))
 @at_ts(expiry<'i>, *old(*s)) == concat(singleton(at_ts(expiry<'i>,*result)), @at_ts(expiry<'i>, *curr(*s)))
-@at_ts_deref(expiry<'i>, at_ts(expiry<'i>, old(*s))) == concat(singleton(at_ts_deref(expiry<'i>, at_ts(expiry<'i>, result))), @at_ts_deref(expiry<'i>, at_ts(expiry<'i>, curr(*s))))
-@at_ts_deref(expiry<'i>, at_ts(old, *s)) == concat(singleton(at_ts_deref(expiry<'i>, result)), @at_ts_deref(expiry<'i>, at_ts(curr, *s)))
-@at_ts_deref(expiry<'i>, at_ts_deref(old, at_ts(old, s))) == concat(singleton(at_ts_deref(expiry<'i>, result, home(result))), @at_ts_deref(expiry<'i>, at_ts_deref(curr, at_ts(s))))
-@at_ts_deref(expiry<'i>, at_ts_deref(old, s)) == concat(singleton(at_ts_deref(expiry<'i>, result, {curr})), @at_ts_deref(expiry<'i>, at_ts_deref(curr, s)))
-@at_ts_deref(expiry<'i>, at_ts_deref(old, s, home(s))) == concat(singleton(^result), @at_ts_deref(expiry<'i>, at_ts_deref(curr, s, home(s))))
-@at_ts_deref(expiry<'i>, at_ts_deref(old, s, {old})) == concat(singleton(^result), @at_ts_deref(expiry<'i>, at_ts_deref(curr, s, {old})))
-@at_ts_deref(expiry<'i>, at_ts_deref(old, s, {old})) == concat(singleton(^result), @at_ts_deref(expiry<'i>, at_ts_deref(expiry<'o>, s, {old})))
-@at_ts_deref(expiry<'i>, *s) == concat(singleton(^result), @at_ts_deref(expiry<'i>, ^s))
-@at_ts_deref(expiry<'i>, *s, home(*s)) == concat(singleton(^result), @at_ts_deref(expiry<'i>, ^s, home(^s)))
-@at_ts_deref(expiry<'i>, *s, home(s)) == concat(singleton(^result), @at_ts_deref(expiry<'i>, ^s, {expiry<'o>}))
-@at_ts_deref(expiry<'i>, *s, {old}) == concat(singleton(^result), @at_ts_deref(expiry<'i>, ^s, {expiry<'o>}))
+@at_ts_deref(expiry<'i>, at_ts(expiry<'i>, old(*s)), home(expiry<'i>, old(*s))) == concat(singleton(at_ts_deref(expiry<'i>, at_ts(expiry<'i>, result), home(expiry<'i>, result))), @at_ts_deref(expiry<'i>, at_ts(expiry<'i>, curr(*s)), home(expiry<'i>, curr(*s))))
+@at_ts_deref(expiry<'i>, at_ts(old, *s), home(old, *s)) == concat(singleton(at_ts_deref(expiry<'i>, at_ts(expiry<'i>, result), home(expiry<'i>, result))), @at_ts_deref(expiry<'i>, at_ts(curr, *s), home(curr, *s)))
+@at_ts_deref(expiry<'i>, at_ts(old, *s), {old}) == concat(singleton(at_ts_deref(expiry<'i>, result, {curr})), @at_ts_deref(expiry<'i>, at_ts(curr, *s), {curr}))
+@^at_ts(old, *s) == concat(singleton(^result), @^at_ts(curr, *s))
+@^at_ts_deref(old, at_ts(old, s), home(old, s)) == concat(singleton(^result), @^at_ts_deref(curr, at_ts(curr, s), home(curr, s)))
+@^at_ts_deref(old, s, {old}) == concat(singleton(^result), @^at_ts_deref(curr, s, {old}))
 @^*s == concat(singleton(^result), @^^s)
 ```
+
+
+
+## The Following Examples Have Not Been Updated to The Latest Rewrite Rules
 ### Eg2
 Assume we can determine `last` and `unwrap` preserve `home`
 Prusti-ish
