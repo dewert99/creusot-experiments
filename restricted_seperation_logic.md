@@ -25,7 +25,7 @@ fn test(x: *mut (u32, u32)) -> (*mut u32, *mut u32) {
 Note that this would work with any positive permission, but not with [no permission](https://doc.rust-lang.org/stable/std/ptr/macro.addr_of_mut.html#:~:text=Note%2C%20however%2C%20that%20the%20expr%20in%20addr_of_mut!(expr)%20is%20still%20subject%20to%20all%20the%20usual%20rules)
 
 
-Raw pointers can be cast-ed to and from references with the following rules
+Raw pointers can be cast to and from references with the following rules
 ```rust
 #[ensures(acc(result, WRITE) && *result == curr(x))]
 #[assert_on_expiry(acc(result, WRITE))]
@@ -57,6 +57,28 @@ fn ptr_to_ref<'a, X>(x: *const X, p: Perm) -> &'a X {
 Reading and writing raw pointers can be treated as casting them to a short lived reference,
 and the reading/writing the reference
 `*const` can be treated a `*mut` with that is never allowed full permission
+Note that `std::ptr::addr_of_mut!(x.f)` and `&mut x.f as *mut _` have different semantics and don't return the same pointer.
+```rust
+#[requires(acc(x, WRITE))]
+fn test1(x: *mut (u32, u32)) {
+    let y = std::ptr::addr_of_mut!(x.0);
+    unsafe{*x = (1, 1)};
+    unsafe{*y = 5};
+    // All legal since we have permission to x and y (just not separately)
+}
+
+#[requires(acc(x, WRITE))]
+fn test2(x: *mut (u32, u32)) {
+    // Exhaled permission to x when casting to a mutable reference then inhaled permission to y
+    let y = &'a mut x.0 as *mut _;
+    // sugar for {let t1 = y as &mut _; let t2 = &mut t1.0; let y = t2 as *mut _;}
+    // 'a must have ended in order to inhale permission to x again
+    unsafe{*x = (1, 1)};
+    // 'a must not have ended in order keep permission to y so this is illegal
+    // This is also a stacked borrows violation
+    unsafe{*y = 5};
+}
+```
 
 Box functions can also be given specs
 ```rust
