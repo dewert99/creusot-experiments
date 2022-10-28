@@ -66,13 +66,10 @@ TODO: Find method of determining which mutable references are known to have `*x 
 (this is true when their `home` is `expiry<'a>` where `'a` is their lifetime).
 These equalities should be added as premises to the all the postconditions.
 
-TODO: Better handle calling logic/pure functions with a "home signature"
- * This would need to describe the expected homes of the parameters eg.
-   * Home must be the expriy of a given lifetime parameter
-   * Home must match the time slice the function is called in
-   * Home doesn't matter (we will never dereference this)
+### Logic/Pure functions, home signatures
+ * Extension of the signature describing the homes of each parameter and the return type
  * It would also need to list which parameters may contribute to the home of the return value
- * Could look something like:
+ * Examples:
 
  ```rust
 #[logic(('curr) -> 'curr)]
@@ -85,7 +82,7 @@ fn stubs::fin<'curr, T>(x: &'curr mut T) -> T {
     *x // Translates to Cruesot ^x
 }
 
-#[logic(<'x>('x) -> 'x), where 'curr: 'x]
+#[logic(('x) -> 'x)]
 fn force_cur<'a, T>(x: &'a mut T) {
     expiry::<'x>(*x)
 }
@@ -104,15 +101,44 @@ fn eq<X>(x: X, y: X) -> bool {
 #[logic(('curr) -> 'curr)] // Allow &mut to implement model
 fn model(self) -> Self::ModelTy;
 
-#[logic(<'x>('x, '_, '_) -> '!), where 'curr: 'x]
+#[logic(('x, '_, '_) -> '!)]
 fn postcondtion_mut<'curr, F: FnMut(Args) -> Out, Args, Out>(f: &'curr mut F, args: Args, res: Out) -> bool;
 
-#[logic(<'x>('x, _) -> 'x)]
+#[logic(('x, _) -> 'x)]
 fn get<K, V>(map: Map<K, V>, key: K) -> V;
 
-#[logic(<'x>('x, 'x, 'x) -> 'x)]
+#[logic(('x, 'x, 'x) -> 'x)]
 fn put<K, V>(map: Map<K, V>, key: K, val: V) -> Map<K, V>;
 ```
+
+### Subtyping
+The usual subtyping rules for lifetimes don't make sense in a logical context.
+In the following example they would allow us to describe the value of an 'static reference while it is blocked
+by pretending it has a shorter lifetime
+```rust
+#[after_expiry<'a>({
+  let val: &'a mut u32 = if b {result.0} else {result.1}; // According to subtyping this is ok 
+  pred(*val) // dereferencing an &'a mut u32 is valid since the lifetime is expiring
+})]
+fn test<'a>(b: bool, x: &'a mut u32) -> (&'a mut u32, &'static mut u32) {
+    (x, Box::leak(Box::new(*x)))
+}
+```
+One solution would be to make all lifetime parameters as invariant but this can be to restrictive
+```rust
+#[after_expiry<'a>({
+  let val: &mut u32 = if b {result.0} else {result.1}; // Now that everything is invariant this isn't allowed
+  pred(val) // This should actually be okay as long as val isn't dereferenced
+})]
+fn test<'a>(b: bool, x: &'a mut u32) -> (&'a mut u32, &'static mut u32) {
+    (x, Box::leak(Box::new(*x)))
+}
+```
+I ended up using a just using a different subtyping relations where all lifetime parameters are unrelated
+regardless of 'static, user annotations, and implied bounds.
+Instead, there is a single global subtype and supertype (similar to using and empty set or a set with multiple elements for homes).
+
+### Possible Extensions
  * It may be useful to have a default "home signature", possibly:
    * All arguments with lifetimes in the type must have there home in the current time slice
    * In trait definitions, all arguments with type involving `Self` or a trait type parameter also must have there home in the current time slice
