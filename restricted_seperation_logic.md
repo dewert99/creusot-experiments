@@ -56,7 +56,7 @@ fn ptr_to_ref<'a, X>(x: *const X, p: Perm) -> &'a X {
 ```
 Reading and writing raw pointers can be treated as casting them to a short lived reference,
 and the reading/writing the reference
-`*const` can be treated a `*mut` with that is never allowed full permission
+`*const` can be treated a `*mut` have the same encoding and `*mut` pointers can be freely cast to `*const` pointers
 Note that `std::ptr::addr_of_mut!(x.f)` and `&mut x.f as *mut _` have different semantics and don't return the same pointer.
 ```rust
 #[requires(acc(x, WRITE))]
@@ -95,6 +95,20 @@ which allows for an implementation of Box::leak
 #[ensures(curr(result) == x.deref())]
 fn leak<X>(x: Box<X>) -> &'static mut X {
     x.into_raw() as _
+}
+```
+
+### Addresses 
+Snapshot/logical equality for pointers uses logical-addresses so `<*const>::address()` is a non-bijectived `#[pure]` function.'
+It does have one special property that at any specific time point all pointers with separate positive permission and the same address must be equal.
+This allows writing a reference equality function
+```rust
+#[ensures(result ==> x1 === x2)]
+fn address_equal<X>(x1: &X, x2: &X) -> bool {
+    let ptr1 = x1 as *const X;
+    let ptr2 = x2 as *const X;
+    ptr1.address() == ptr2.address() //separate permission to ptr1 and ptr2 means that there equal if there addresses are
+    // anonymous lifetime ends and permissions to ptr1 and ptr2 are inhaled
 }
 ```
 
