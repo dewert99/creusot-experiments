@@ -129,13 +129,13 @@ fn test<X: MyTrait>(x: &X) {
     assert_eq!(val1, val2); // We'd probably like this to hold
 }
 
-#[invariant(acc(self.0))]
+#[invariant(acc(self.0) && *self.0 % 2 == 0)]
 struct AccPtr(*mut u32);
 
 impl MyTrait for AccPtr {
     fn impure(&self) {
         let ptr = self.0; // pointers are copy
-        unsafe{*ptr += 1}; // We have access from the invariant
+        unsafe{*ptr += 2}; // We have access from the invariant
     }
 
     fn pure(&self) -> u32 {
@@ -153,3 +153,128 @@ fn bad() {
     // r expires but we now have access
 }
 ```
+### Possible Solution
+Multiply permissions in heap dependent invariants by "surrounding context"
+ * Full permission if owned or under mutable reference
+ * Arbitrarily small permission if under shared reference
+ * `p` if on the heap with permission `p`
+We could then add a non heap dependent logical function mapping the snapshots of types with heap dependent invariants
+to the footprint of their invariant on the heap.
+This way pure/logical functions using these types still won't be heap dependent (unless they have an explicit heap dependent precondition)
+
+As an optimization we could only inhale and exhale invariants when relevant
+ * When constructing directly
+   * Assume the footprint function of the new object agrees with the heap
+   * Exhale invariant (times write permission)
+ * When destructuring directly or dropping
+   * Inhale invariant (times write permission) 
+ * When destructuring a shared reference
+   * Inhale invariant (times arbitrarily small permission)
+   * Assume the footprint function of the reference agrees with the heap
+ * When destructuring a mutable reference
+   * Inhale `cur` invariant (times write permission)
+   * Assume the footprint function of the `cur` reference agrees with the heap
+   * Handle prophecy encoding
+ * At the end of the lifetime of a destructured a mutable reference
+   * Assume the footprint function of the `fin` reference agrees with the heap
+   * Exhale `fin` invariant (times write permission)
+ * `acc(t, perm)` where `t: *mut T` contains `t`s invariant times `perm`
+
+ Eg for the above
+```rust
+trait Invariant {
+    #[predicate] // Viper Predicate
+    #[ensures(self.inv_pure())]
+    fn inv(self) -> bool;
+
+    #[logic] // Viper Function
+    fn inv_pure(self) -> bool;
+    
+    #[logic]
+    #[requires(self.inv() * epsion?)] // this is actually heap dependent
+    fn assume_footprint(self) -> bool;
+}
+
+trait MyTrait {
+    fn impure(&self);
+    
+    #[pure]
+    fn pure(&self) -> u32;
+}
+
+fn test<X: MyTrait>(x: &X) {
+    let val1 = x.pure();
+    x.impure();
+    let val2 = x.pure();
+    assert_eq!(val1, val2); // This holds since x.pure is not heap dependent
+}
+
+
+struct AccPtrInner(*mut u32);
+
+struct AccPtr{data: AccPtrInner, footprint: Heap}
+
+impl<'a, T> Invariant for AccPtr {
+    #[predicate] // heap dependent
+    #[ensures(self.inv_pure())]
+    fn inv(self) -> bool {
+        acc(self.data.0) && self.inv_pure()
+    }
+
+    #[logic] // not heap dependent
+    fn inv_pure(self) -> bool {
+        self.footprint[self.data.0] % 2 == 0
+    }
+
+    #[logic]
+    #[requires(self.inv() * epsion?)] // this is actually heap dependent
+    fn assume_footprint(self) -> bool {
+        unsafe{*self.data.0 == self.footprint[self.data.0]}
+    }
+}
+
+impl MyTrait for AccPtr {
+    fn impure(&self) {
+       inhale!(self.inv() * epsilon?); // before destructure
+       assume!(self.assume_footprint()); // before destructure
+       let inner = &self.data; // destructures &self
+       let ptr = inner.0; 
+       unsafe{*ptr += 1}; // FAIL we don't have full permission
+    }
+
+    #[pure]
+    fn pure(&self) -> u32 { 
+       assume!(self.inv_pure()); // before destructure
+       let inner = &self.data; // destructures &self
+       footprint(self)[inner.0]
+    }
+}
+
+impl AccPtr {
+   #[ensures(fin(self).pure() == cur(self).pure() + 1)]
+   fn impure2(&mut self) {
+      inhale!(cur(self).inv()); // before destructure
+      assume!(cur(self).assume_footprint()); // before destructure
+      let inner = &mut self.data; // destructures &mut self
+      let ptr = inner.0;
+      unsafe{*ptr += 1}; // FAIL we don't have full permission
+      assume!(fin(self).assume_footprint()); // before expiry
+      exhale!(fin(self).inv()); // before expiry
+   }
+}
+
+fn bad() {
+   let x = 5u32;
+   let r = &mut x;
+   // casting gives us access
+   let y = AccPtr{data: AccPtrInner(r as *mut u32), footprint: havoc()};
+   assume!(y.assume_footprint()); // after constructor
+   exhale!(y.inv()); // after constructor
+   test(&y); // the assertion would fail
+   inhale!(y.inv()); // before drop constructor
+   assume!(y.assume_footprint()); // before drop
+   // r expires but we now have access
+}
+```
+Note: An advantage of this approach is that (program) functions involving types with heap dependent invariants can still be heap independent as long as they don't touch it's fields.
+This allows for the encapsulation of separation logic
