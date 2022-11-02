@@ -278,3 +278,75 @@ fn bad() {
 ```
 Note: An advantage of this approach is that (program) functions involving types with heap dependent invariants can still be heap independent as long as they don't touch it's fields.
 This allows for the encapsulation of separation logic
+
+### Dynamic Lifetimes
+One pattern in unsafe that so far hasn't been captured is the use of 'static to as a phony erased lifetime
+see https://docs.rs/yoke/latest/yoke/.
+
+Given a Box with some data in it we can get write permission to the pointer and create a 'static mutable reference but can then never free the memory, (basically we just implemented Box::leak)
+
+One solution would be to use yokes strategy and create a newtype wrapper and use paramatricity to ensure that the 'static lifetime never leaks
+then we could give up ownership of the newtype wrapper in exchange for the permission.
+
+The following example gives a fairly generic implementation of this idea, but uses `#[trusted]` that would need to be externally verified,
+I'm not sure if separation logic can get us any closer than this.
+
+
+```rust
+use core::marker::PhantomData;
+use core::mem::transmute;
+
+// Mimic HKT
+unsafe trait Yokeable {
+   type This<'a>; // 'a must be covariant in this
+}
+
+unsafe impl<T: ?Sized> Yokeable for &'static mut T {
+   type This<'a> = &'a mut T;
+}
+
+unsafe impl<T: ?Sized> Yokeable for &'static T {
+   type This<'a> = &'a T;
+}
+
+struct ErasedLifetime<T: Yokable2, P> {
+   data: T::This<'static>,
+   ptr: Ghost<*mut P>
+}
+
+impl<T> ErasedLifetime<&'static mut T, T> {
+   #[requires(acc(x))]
+   fn new(x: *mut T) -> Self {
+      ErasedLifetime{data: x as &'static mut T, ptr: ghost!(x)}
+   }
+}
+
+impl<T, P> ErasedLifetime<T, P> {
+   /// Function needs extra arg due to [#86702](https://github.com/rust-lang/rust/issues/86702)
+   // requires f's precondition
+   // ensures ...
+   fn map<F: for<'a> FnOnce(T::This<'a>, PhantomData<&'a ()>) -> U::This<'a>, U: Yokable2>(self, f: F) -> ErasedLifetime<U, P> {
+      ErasedLifetime{data: f(self.data, PhantomData), ptr: self.ptr}
+   }
+   
+   #[trusted] // Safety involves paramtricity enforcing the lifetime can never escape the ErasedLifetime struct
+   // requires f's precondition
+   #[ensures(acc(self.ptr))] // after this we can free the ptr if we still have it
+   // more ensures ...
+   fn destruct<F: for<'a> FnOnce(T::This<'a>, PhantomData<&'a ()>) -> U, U>(self, f: F) -> U { // note U can't contain 'a
+      f(self.data)
+   }
+
+   #[trusted]
+   // ensures ...
+   fn get<'a>(&'a self) -> &'a T::This<'a> {
+      unsafe {transmute(&self.data)} // Safety Covariance
+   }
+
+   #[trusted]
+   // ensures ...
+   fn get_mut<'a>(&'a mut self) -> &'a mut T::This<'a> {
+      unsafe{transmute(&mut self.data)} // Safety Covariance
+   }
+}
+```
