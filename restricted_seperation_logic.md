@@ -8,7 +8,7 @@ Shared and mutable occupy a single heap location which corresponds to their snap
 A built-in predicate is to describe access to a heap region:
 ```rust
 #[predicate]
-fn acc<T>(ptr: *mut T, perm: Perm) -> bool {
+fn acc<T>(ptr: *const T, perm: Perm) -> bool {
     // built-in
 }
 ```
@@ -388,10 +388,45 @@ impl AccPtr<T> {
 
 fn bad<'a>(x: &'a mut &'static u32, bad_ref: &'a u32) {
    let ptr = x as *mut &'static u32;
-   let mut acc_ptr = AccPtr(ptr);
-    acc_ptr.deref_mut() = bad_ref;
+   let acc_ptr: AccPtr<&'static str> = AccPtr(ptr);
+   let mut acc_ptr: AccPtr<&'a str> = acc_ptr;
+    *acc_ptr.deref_mut() = bad_ref;
    // drop acc_ptr to get permissions back which we need since 'a is expiring
 }
 ```
 
-We somehow need a way of indicating that some heap region will never be used again after a call, while still giving permission back to run the deconstructor.
+We could potentially work around this by modifying our definition of `acc(ptr: *const T)` to explicitly include that 
+`ptr` is a valid `T`. eg.
+```rust
+
+fn bad<'a>(x: &'a mut &'static u32, bad_ref: &'a u32) {
+   let ptr = x as *mut &'static u32; // inhale acc(ptr as *mut &'static u32)
+   let acc_ptr: AccPtr<&'static str> = AccPtr(ptr);// exhale acc(ptr as *mut &'static u32)
+   let mut acc_ptr: AccPtr<&'a str> = acc_ptr;
+    *acc_ptr.deref_mut() = bad_ref;
+   // dropping acc_ptr inhales acc(ptr as *mut &'a u32)
+   // FAIL 'a expires (unblocking x) so we need to exhale acc(ptr as *mut &'static u32)
+}
+
+fn good<'a>(x: Box<&'static u32>, short_ref: &'a u32) -> Box<&'a u32> {
+   let ptr = x.into_raw(); // inhale acc(ptr as *mut &'static u32)
+   let acc_ptr: AccPtr<&'static str> = AccPtr(ptr);// exhale acc(ptr as *mut &'static u32)
+   let mut acc_ptr: AccPtr<&'a str> = acc_ptr;
+   *acc_ptr.deref_mut() = short_ref;
+   // dropping acc_ptr inhales acc(ptr as *mut &'a u32)
+   Box::from_raw(ptr as *mut &'a u32) // exhales acc(ptr as *mut &'a u32)
+}
+
+fn interesting<'a>(x: &'a mut &'static u32, short_ref: &'a u32) {
+   let ptr = x as *mut &'static u32; // inhale acc(ptr as *mut &'static u32)
+   let acc_ptr: AccPtr<&'static str> = AccPtr(ptr);// exhale acc(ptr as *mut &'static u32)
+   let mut acc_ptr: AccPtr<&'a str> = acc_ptr;
+   *acc_ptr.deref_mut() = short_ref;
+   // dropping acc_ptr inhales acc(ptr as *mut &'a u32)
+   let x: &'static u32 = &0;
+   unsafe{*ptr = x}; // This would need a special rule to allow us write with a sub type and upgrade access
+   // 'a expires (unblocking x) so we need to exhale acc(ptr as *mut &'static u32)
+}
+```
+Note: Using this kind of system `*const T` and `*mut T` can be freely switched between and the main reason to choose `*mut T`
+is that it can give stronger guarantees about the type of access being returned.
