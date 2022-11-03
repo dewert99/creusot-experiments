@@ -80,17 +80,31 @@ fn test2(x: *mut (u32, u32)) {
 }
 ```
 
+### Boxes
 Box functions can also be given specs
 ```rust
+#[opaque]
+fn was_alloced<T>(ptr: *const T) -> bool;
+
 impl Box<T> {
-    #[ensures(acc(result, WRITE) && *result == self.deref())]
+    #[ensures(acc(result, WRITE) && *result == self.deref() && was_alloced(result))]
     fn into_raw(self) -> *mut T;
 
-    #[requires(acc(result, WRITE))]
+    #[requires(acc(result, WRITE) && was_alloced(result))]
     fn from_raw(ptr: *mut T) -> Self;
 }
 ```
-which allows for an implementation of Box::leak
+We need to include `was_alloced` to prevent:
+```rust
+fn bad() {
+   let b = Box::new((0, 0));
+   let ptr = b.into_raw();
+   let ptr0 = addr_of_mut!(ptr.0);
+   let b0 = Box::from_raw(ptr0);
+   drop(b0); // this would try to deallocate a portion of the original memory
+}
+```
+this allows for an implementation of Box::leak
 ```rust
 #[ensures(curr(result) == x.deref())]
 fn leak<X>(x: Box<X>) -> &'static mut X {
@@ -430,3 +444,5 @@ fn interesting<'a>(x: &'a mut &'static u32, short_ref: &'a u32) {
 ```
 Note: Using this kind of system `*const T` and `*mut T` can be freely switched between and the main reason to choose `*mut T`
 is that it can give stronger guarantees about the type of access being returned.
+Note: Using this system `x as *const X == x as *const Y`,
+`acc(x as *const X) != acc(x as *const Y)` comes from `acc` meaning something different in both cases
