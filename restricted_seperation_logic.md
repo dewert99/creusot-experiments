@@ -446,3 +446,42 @@ Note: Using this kind of system `*const T` and `*mut T` can be freely switched b
 is that it can give stronger guarantees about the type of access being returned.
 Note: Using this system `x as *const X == x as *const Y`,
 `acc(x as *const X) != acc(x as *const Y)` comes from `acc` meaning something different in both cases
+
+### Send / Sync
+Since we are using separation logic for raw pointers we would probably be fine if raw pointers were Send and Sync (at least when the underlying type is),
+since writing from 2 threads would require 2*write permission.
+Since they don't, the easiest solution would be to make use newtype wrappers:
+```rust
+struct CPtr<T>(*const T);
+unsafe impl<T: Send> Send for CPtr<T> {}
+unsafe impl<T: Sync> Send for CPtr<T> {}
+
+struct MPtr<T>(*mut T);
+unsafe impl<T: Send> Send for MPtr<T> {}
+unsafe impl<T: Sync> Send for MPtr<T> {}
+```
+this would work, but prevent us actually using raw pointers most of the time.
+
+Using the standard library strategy of implementing Send and Sync directly on wrapper types would be harder to justify,
+since we wouldn't want users to override things that aren't Send/Sync for other reasons.
+
+We could potentially try and indicate things that aren't Send/Sync for other reasons using auto traits, but they are unstable,
+and we could miss things that were relying on being non-Send/Sync since they contain raw pointers.
+```rust
+#![feature(negative_impls)]
+#![feature(auto_traits)]
+
+use core::cell::UnsafeCell;
+
+auto trait VSend {}
+auto trait VSync {}
+
+impl<T: ?Sized> !VSync for UnsafeCell<T> {}
+impl<'a, T: ?Sized + VSync> VSend for &'a T {}
+...
+
+struct WrapSS<T>(T);
+
+unsafe impl<T: VSend> Send for WrapSS<T> {}
+unsafe impl<T: VSync> Sync for WrapSS<T> {}
+```
