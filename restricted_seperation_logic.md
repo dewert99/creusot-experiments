@@ -56,7 +56,7 @@ fn ptr_to_ref<'a, X>(x: *const X, p: Perm) -> &'a X {
 ```
 Reading and writing raw pointers can be treated as casting them to a short lived reference,
 and the reading/writing the reference
-`*const` can be treated a `*mut` have the same encoding and `*mut` pointers can be freely cast to `*const` pointers
+`*const` and `*mut` have the same encoding and `*mut` pointers can be freely cast to `*const` pointers
 Note that `std::ptr::addr_of_mut!(x.f)` and `&mut x.f as *mut _` have different semantics and don't return the same pointer.
 ```rust
 #[requires(acc(x, WRITE))]
@@ -111,6 +111,10 @@ fn address_equal<X>(x1: &X, x2: &X) -> bool {
     // anonymous lifetime ends and permissions to ptr1 and ptr2 are inhaled
 }
 ```
+
+Keeping track of physical addresses for references may occasionally be useful (possibly for alignment checking),
+but it could make proofs more expensive.
+We could possibly make it optional, but then we would either have to prevent code using the feature from calling code not using it.
 
 ### Parametric Framing Problem
 If we allow for heap dependent type invariants we run into a framing problem
@@ -350,3 +354,44 @@ impl<T, P> ErasedLifetime<T, P> {
    }
 }
 ```
+
+### Variance
+The main difference between `*mut T` and `*const T` is that `*mut T` is invariant while `*const T` is covariant.
+By not allowing `*const T`s to be cast into `*mut T` or `&mut T` we can ensure they are never written to making the covariance safe.
+
+When representing "owned" pointers (those in a struct with a heap dependent invariant as described above),
+we would like to be able to have covariance (this the case for Box, Vec, LinkedList, ect.) but would need to use `*mut T`
+in our struct in order to project mutability though the pointer.
+
+An unsound solution could be to allow copying out of a `&mut *const T` and immediately casting the result to a `*mut T`
+which seems safe since `T` is invariant in `&mut *const T` anyways but this would allow
+```rust
+#[requires(acc(x))]
+fn bad<'a>(x: *const &'static u32, bad_ref: &'a u32) {
+   let mut mut_x: *const &'a u32 = x;
+   let mut_ref_x = &mut mut_x;
+   let x_mut = *mut_ref_x as *mut &'a u32;
+   unsafe{*x_mut = bad_ref}
+}
+```
+
+There is actually a more general issue here that heap dependent invariant don't solve
+```rust
+#[invariant(acc(self.0))]
+struct AccPtr<T>(*const T); // we want covariance
+
+impl AccPtr<T> {
+   fn deref_mut(&mut self) -> &mut T {
+      self.0 as &mut _ // this can never be safe
+   }
+}
+
+fn bad<'a>(x: &'a mut &'static u32, bad_ref: &'a u32) {
+   let ptr = x as *mut &'static u32;
+   let mut acc_ptr = AccPtr(ptr);
+    acc_ptr.deref_mut() = bad_ref;
+   // drop acc_ptr to get permissions back which we need since 'a is expiring
+}
+```
+
+We somehow need a way of indicating that some heap region will never be used again after a call, while still giving permission back to run the deconstructor.
