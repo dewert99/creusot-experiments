@@ -1,6 +1,6 @@
-use creusot_contracts::*;
+use creusot_contracts::{*, logic::*};
 use ::std::collections::btree_set::BTreeSet;
-use creusot_contracts::std::iter::IteratorSpec;
+use creusot_contracts::std::iter::Iterator;
 use crate::ghost_ptr::*;
 use crate::p_map::PMap;
 
@@ -8,7 +8,7 @@ struct Node<T>{data: T, neighbours: Vec<NodePtr<T>>}
 type NodePtr<T> = GhostPtr<Node<T>>;
 type Token<T> = GhostToken<Node<T>>;
 type TokenM<T> = PMap<NodePtr<T>, Node<T>>;
-type SetM = <HashSetUsize as Model>::ModelTy;
+type SetM = <HashSetUsize as ShallowModel>::ShallowModelTy;
 struct Graph<T>{token: Token<T>, start: NodePtr<T>}
 
 #[predicate]
@@ -19,7 +19,7 @@ fn neighbours_invariant<T>(neighbours: Seq<NodePtr<T>>, token: TokenM<T>) -> boo
 impl<T> Graph<T> {
     #[predicate]
     pub fn invariant(self) -> bool {
-        let token = self.token.model();
+        let token = self.token.shallow_model();
         pearlite!{token.contains(self.start) &&
             forall<ptr: NodePtr<T>> token.contains(ptr) ==>
                 neighbours_invariant(@token.lookup(ptr).neighbours, token)}
@@ -94,7 +94,7 @@ impl<'a, T> DFSMut<'a, T> {
         match todo.pop() {
             Some(ptr) => {
                 proof_assert!(forall<neighbours: Seq<NodePtr<T>>> weak_neighbours_lemma(neighbours, @token, @seen, ptr));
-                let old_token = ghost!(token.model());
+                let old_token = ghost!(token.shallow_model());
                 let Node{data, ref neighbours} = ptr.reborrow(token);
                 proof_assert!(todo_invariant(@todo, @seen, @token));
                 let mut i = 0;
@@ -104,14 +104,14 @@ impl<'a, T> DFSMut<'a, T> {
                 while i < neighbours.len() {
                     let neighbour = neighbours[i];
                     proof_assert!(!(@seen).contains(neighbour.addr_logic()) ==> (@token).contains(neighbour));
-                    let old_seen = ghost!(seen.model());
+                    let old_seen = ghost!(seen.shallow_model());
                     if seen.insert(neighbour.addr()) {
                         proof_assert!(todo_lemma(@todo, *old_seen, @token, neighbour));
-                        ghost!(dummy_lemma(todo.model(), neighbour));
+                        ghost!(dummy_lemma(todo.shallow_model(), neighbour));
                         todo.push(neighbour);
                         proof_assert!(todo_invariant(@todo, @seen, @token));
                     } else {
-                        proof_assert!(old_seen.ext_eq(@seen));
+                        proof_assert!(*old_seen == @seen);
                     }
                     i+=1;
                 }
@@ -129,12 +129,12 @@ use ::std::collections::HashSet;
 #[trusted]
 struct HashSetUsize(HashSet<usize>);
 
-impl Model for HashSetUsize {
-    type ModelTy = FSet<Int>;
+impl ShallowModel for HashSetUsize {
+    type ShallowModelTy = FSet<Int>;
 
     #[trusted]
     #[logic]
-    fn model(self) -> Self::ModelTy {
+    fn shallow_model(self) -> Self::ShallowModelTy {
         absurd
     }
 }

@@ -1,13 +1,30 @@
 use creusot_contracts::*;
 
+pub type SizedW<T> = Box<T>;
+
+pub trait MakeSized {
+    #[logic]
+    #[why3::attr = "inline:trivial"]
+    fn make_sized(self) -> SizedW<Self>;
+}
+
+impl<T: ?Sized> MakeSized for T {
+    #[trusted]
+    #[logic]
+    #[ensures(*result == self)]
+    fn make_sized(self) -> SizedW<Self> {
+        absurd
+    }
+}
 
 
-#[trusted]
+#[allow(unconditional_recursion)]
 #[logic]
 #[requires(false)]
 #[ensures(false)]
+#[variant(0)]
 pub fn unreachable<T>() -> T {
-    absurd
+    unreachable()
 }
 
 #[logic]

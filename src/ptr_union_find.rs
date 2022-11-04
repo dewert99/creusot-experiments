@@ -17,9 +17,9 @@ type TokenM = PMap<NodePtr, Node>;
 fn owns(union_find: TokenM, ptr: NodePtr) -> bool {
     match union_find.get(ptr) {
         None => false,
-        Some(node) => match node.deref() {
+        Some(node) => match *node {
             Node::Root{..} => true,
-            Node::Internal {parent} => owns(union_find.remove(ptr), *parent)
+            Node::Internal {parent} => owns(union_find.remove(ptr), parent)
         }
     }
 }
@@ -107,12 +107,12 @@ fn owns_compress(sub_union_find: TokenM, union_find: TokenM, ptr1: NodePtr, ptr2
 impl UnionFind {
     #[predicate]
     fn owns(self, ptr: NodePtr) -> bool {
-        owns(self.0.model(), ptr)
+        owns(self.0.shallow_model(), ptr)
     }
 
     #[logic]
     fn representative(self, ptr: NodePtr) -> NodePtr {
-        representative(self.0.model(), ptr)
+        representative(self.0.shallow_model(), ptr)
     }
 
     #[logic]
@@ -129,7 +129,7 @@ impl UnionFind {
         match ptr.borrow(&self.0) {
             Node::Root {..} => ptr,
             Node::Internal {parent} => {
-                proof_assert!(owns_super(self.0.model().remove(ptr), self.0.model(), *parent));
+                proof_assert!(owns_super(self.0.shallow_model().remove(ptr), self.0.shallow_model(), *parent));
                 let rep = self.find(*parent);
                 *ptr.borrow_mut(&mut self.0) = Node::Internal {parent: rep};
                 rep

@@ -27,12 +27,12 @@ impl<T: ?Sized> Clone for GhostPtr<T> {
 }
 
 
-impl<T: ?Sized> Model for GhostToken<T> {
-    type ModelTy = PMap<GhostPtr<T>, T>;
+impl<T: ?Sized> ShallowModel for GhostToken<T> {
+    type ShallowModelTy = PMap<GhostPtr<T>, T>;
 
     #[trusted]
     #[logic]
-    fn model(self) -> Self::ModelTy {
+    fn shallow_model(self) -> Self::ShallowModelTy {
         absurd
     }
 }
@@ -42,7 +42,7 @@ impl<T: ?Sized> GhostToken<T> {
     #[trusted]
     #[ensures(@result == PMap::empty())]
     pub fn new() -> Self {
-        GhostToken(PhantomData::default())
+        GhostToken(PhantomData)
     }
 
     /// Gain permission to all of the [`GhostPtr`]s managed by other
@@ -201,7 +201,7 @@ fn test() {
     let mut t_inner = &mut *t;
     let m1 = ptr1.reborrow(&mut t_inner);
     proof_assert!(@m1 == 5);
-    proof_assert!(t_inner.model().lookup(ptr3) == 7i32);
+    proof_assert!(t_inner.shallow_model().lookup(ptr3) == 7i32);
     let r3 = ptr3.reborrow(&mut t_inner);
     // let bad = ptr2.borrow(t); // Borrow Checker Error
     // let bad = ptr2.borrow(t_inner); // Verification Error
@@ -217,12 +217,12 @@ fn test() {
     token.drop();
 }
 
-#[requires(token.model().contains(ptr1))]
-#[requires(token.model().contains(ptr2))]
+#[requires(token.shallow_model().contains(ptr1))]
+#[requires(token.shallow_model().contains(ptr2))]
 fn test2<T>(token: &mut GhostToken<T>, ptr1: GhostPtr<T>, ptr2: GhostPtr<T>) -> Option<(&mut T, &mut T)> {
     if ptr1.addr() != ptr2.addr() {
         proof_assert!(ptr1 != ptr2);
-        proof_assert!(token.model().remove(ptr1).get(ptr2) == token.model().get(ptr2));
+        proof_assert!((@token).remove(ptr1).get(ptr2) == (@token).get(ptr2));
         let mut t = &mut *token;
         let m1 = ptr1.reborrow(&mut t);
         let m2 = ptr2.borrow_mut(t);

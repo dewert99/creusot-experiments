@@ -121,10 +121,10 @@ impl<T> LinkedList<T> {
     pub fn invariant(self) -> bool {
         let LinkedList{head, tail, token} = self;
         if head == Ptr::null_logic() {
-            token.model().is_empty()
+            token.shallow_model().is_empty()
         } else {
-            lseg_strict(head, tail, token.model().remove(tail)) &&
-                token.model().contains(tail) && token.model().lookup(tail).next == Ptr::null_logic()
+            lseg_strict(head, tail, token.shallow_model().remove(tail)) &&
+                token.shallow_model().contains(tail) && token.shallow_model().lookup(tail).next == Ptr::null_logic()
         }
     }
 
@@ -135,7 +135,7 @@ impl<T> LinkedList<T> {
         if head == Ptr::null_logic() {
             Seq::EMPTY
         } else {
-            lseg_seq(head, tail, token.model().remove(tail)).push(token.model().lookup(tail).data)
+            lseg_seq(head, tail, token.shallow_model().remove(tail)).push(token.shallow_model().lookup(tail).data)
         }
     }
 
@@ -152,10 +152,10 @@ impl<T> LinkedList<T> {
     fn dequeue_box(&mut self) -> Box<Node<T>> {
         let old_self = ghost!(self);
         let LinkedList{head, ref tail, token} = self;
-        let old_token: Ghost<TokenM<T>>  = ghost!(token.model());
+        let old_token: Ghost<TokenM<T>>  = ghost!(token.shallow_model());
         let res = head.take_box(token);
         let next = res.next;
-        proof_assert!(next != Ptr::null_logic() ==> token.model().remove(*tail).ext_eq(old_token.remove(*tail).remove(*head)));
+        proof_assert!(next != Ptr::null_logic() ==> token.shallow_model().remove(*tail).ext_eq(old_token.remove(*tail).remove(*head)));
         *head = next;
         proof_assert!(next == Ptr::null_logic() ==> self.to_seq().ext_eq(old_self.to_seq().tail()));
         proof_assert!(next != Ptr::null_logic() ==> self.to_seq().ext_eq(old_self.to_seq().tail()));
@@ -172,11 +172,11 @@ impl<T> LinkedList<T> {
         let LinkedList{head, ref tail, token} = self;
         val.next = *head;
         let ptr = GhostPtr::from_box_in(val, token);
-        proof_assert!(old_self.token.model().remove(*tail).ext_eq(token.model().remove(*tail).remove(ptr)));
+        proof_assert!(old_self.token.shallow_model().remove(*tail).ext_eq(token.shallow_model().remove(*tail).remove(ptr)));
         *head = ptr;
     }
 
-    #[ensures(result.token.model().len() == 0)]
+    #[ensures(result.token.shallow_model().len() == 0)]
     #[ensures(result.invariant())]
     pub fn new() -> Self {
         LinkedList{head: Ptr::null(), tail: Ptr::null(), token: Token::new()}
@@ -188,19 +188,19 @@ impl<T> LinkedList<T> {
     pub fn enqueue(&mut self, elt: T) {
         let old_self = ghost!(self);
         let LinkedList{head, tail, token} = self;
-        let old_token: Ghost<TokenM<T>> = ghost!(token.model());
+        let old_token: Ghost<TokenM<T>> = ghost!(token.shallow_model());
         let node = Node{data: elt, next: Ptr::null()};
         let ptr = GhostPtr::new_in(node, token);
         if head.is_null() {
             *head = ptr;
             *tail = ptr;
-            proof_assert!(token.model().remove(*tail) == (lseg_basis(ptr, *tail, token.model())));
+            proof_assert!(token.shallow_model().remove(*tail) == (lseg_basis(ptr, *tail, token.shallow_model())));
         } else {
             let head = &*head;
             proof_assert!(lseg_super(*head, *tail, old_token.remove(*tail), *old_token));
             tail.borrow_mut(token).next = ptr;
-            proof_assert!(old_token.remove(*tail).ext_eq(token.model().remove(ptr).remove(*tail)));
-            let old_token: Ghost<TokenM<T>> = ghost!(token.model().remove(ptr));
+            proof_assert!(old_token.remove(*tail).ext_eq(token.shallow_model().remove(ptr).remove(*tail)));
+            let old_token: Ghost<TokenM<T>> = ghost!(token.shallow_model().remove(ptr));
             proof_assert!(lseg_basis(*head, *tail, old_token.remove(*tail)).ext_eq(old_token.remove(*tail)));
             proof_assert!(lseg_trans(*head, *tail, ptr, old_token.remove(*tail), PMap::empty().insert(*tail, old_token.lookup(*tail))));
             proof_assert!(old_token.remove(*tail).union(PMap::empty().insert(*tail, old_token.lookup(*tail))).ext_eq(*old_token));
@@ -339,7 +339,7 @@ impl<'a, T> IterMut<'a, T> {
 
     #[logic]
     #[requires(self.invariant())]
-    #[ensures(result.len() == self.token.model().len())]
+    #[ensures(result.len() == self.token.shallow_model().len())]
     pub fn curr_seq(self) -> Seq<T> {
         LinkedList{head: self.curr, tail: *self.tail, token: *self.token}.to_seq()
     }
@@ -374,9 +374,9 @@ impl<'a, T> IterMut<'a, T> {
             None
         } else {
             let old_token: Ghost<&mut Token<T>>  = ghost!(*token);
-            let old_token_m: Ghost<TokenM<T>>  = ghost!(token.model());
+            let old_token_m: Ghost<TokenM<T>>  = ghost!(token.shallow_model());
             let Node{data, ref next} = curr.reborrow(token);
-            proof_assert!(*next != Ptr::null_logic() ==> token.model().remove(*tail).ext_eq(old_token_m.remove(*tail).remove(*curr)));
+            proof_assert!(*next != Ptr::null_logic() ==> token.shallow_model().remove(*tail).ext_eq(old_token_m.remove(*tail).remove(*curr)));
             proof_assert!(@^*old_token == (@^*token).insert(*curr, Node{data: ^data, next: *next}));
             proof_assert!((@^*old_token).remove(*curr).ext_eq(@^*token));
             proof_assert!(*curr != *tail ==>

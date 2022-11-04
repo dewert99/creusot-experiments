@@ -1,7 +1,8 @@
-use creusot_contracts::*;
+use creusot_contracts::{*, logic::*};
 use super::helpers::*;
 
-pub struct PMap<K, V: ?Sized>(pub Mapping<K, Option<Ghost<V>>>);
+pub struct PMap<K, V: ?Sized>(pub Mapping<K, Option<SizedW<V>>>);
+
 
 #[trusted]
 #[logic]
@@ -18,12 +19,6 @@ fn len_def0<K, V: ?Sized>(m: PMap<K, V>) -> bool {true}
 fn len_def1<K, V: ?Sized>(m: PMap<K, V>, k: K) -> bool {true}
 
 
-#[trusted]
-#[logic]
-#[creusot::builtins = "ghost_new"]
-fn new_ghost<T: ?Sized>(t: T) -> Ghost<T> {
-    absurd
-}
 
 
 impl<K, V: ?Sized> PMap<K, V> {
@@ -38,8 +33,8 @@ impl<K, V: ?Sized> PMap<K, V> {
     #[ensures(self.contains(k) ==> result.len() == self.len())]
     #[ensures(!self.contains(k) ==> result.len() == self.len() + 1)]
     pub fn insert(self, k: K, v: V) -> Self {
-        PMap(self.0.set(k, Some(new_ghost(v)))).remove(k).ext_eq(self.remove(k));
-        PMap(self.0.set(k, Some(new_ghost(v))))
+        PMap(self.0.set(k, Some(v.make_sized()))).remove(k).ext_eq(self.remove(k));
+        PMap(self.0.set(k, Some(v.make_sized())))
     }
 
     #[logic]
@@ -51,12 +46,12 @@ impl<K, V: ?Sized> PMap<K, V> {
 
     #[logic]
     #[why3::attr = "inline:trivial"]
-    pub fn get(self, k: K) -> Option<Ghost<V>>{
+    pub fn get(self, k: K) -> Option<SizedW<V>>{
         self.0.get(k)
     }
 
     #[logic]
-    pub fn lookup_ghost(self, k: K) -> Ghost<V> {
+    pub fn lookup_ghost(self, k: K) -> SizedW<V> {
         unwrap(self.0.get(k))
     }
 
@@ -124,6 +119,6 @@ impl<K, V: ?Sized> PMap<K, V> {
     #[ensures(result ==> self == other)]
     #[ensures((forall<k: K> self.0.get(k) == other.0.get(k)) ==> result)]
     pub fn ext_eq(self, other: Self) -> bool {
-        self.0.ext_eq(other.0)
+        self.0 == other.0
     }
 }
