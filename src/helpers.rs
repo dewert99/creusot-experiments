@@ -1,16 +1,16 @@
-use creusot_contracts::*;
+use creusot_contracts::prusti_prelude::*;
 
 pub type SizedW<T> = Box<T>;
 
 pub trait MakeSized {
-    #[logic]
+    #[logic(('x) -> 'x)]
     #[why3::attr = "inline:trivial"]
     fn make_sized(self) -> SizedW<Self>;
 }
 
 impl<T: ?Sized> MakeSized for T {
     #[trusted]
-    #[logic]
+    #[logic(('x) -> 'x)]
     #[ensures(*result == self)]
     fn make_sized(self) -> SizedW<Self> {
         absurd
@@ -19,7 +19,7 @@ impl<T: ?Sized> MakeSized for T {
 
 
 #[allow(unconditional_recursion)]
-#[logic]
+#[logic(() -> '_)]
 #[requires(false)]
 #[ensures(false)]
 #[variant(0)]
@@ -27,7 +27,7 @@ pub fn unreachable<T>() -> T {
     unreachable()
 }
 
-#[logic]
+#[logic(('x) -> 'x)]
 #[requires(op != None)]
 #[ensures(Some(result) == op)]
 pub fn unwrap<T>(op: Option<T>) -> T {

@@ -1,18 +1,18 @@
-use creusot_contracts::{*, logic::*};
+use creusot_contracts::{logic::*, prusti_prelude::*, logic as base_logic};
 use super::helpers::*;
 
 pub struct PMap<K, V: ?Sized>(pub Mapping<K, Option<SizedW<V>>>);
 
 
 #[trusted]
-#[logic]
+#[logic(('_) -> '_)]
 #[requires(forall<k: K> m.0.get(k) == None)]
 #[ensures(result)]
 #[ensures(result ==> m.len() == 0)]
 fn len_def0<K, V: ?Sized>(m: PMap<K, V>) -> bool {true}
 
 #[trusted]
-#[logic]
+#[logic(('_, '_) -> '_)]
 #[requires(m.0.get(k) != None)]
 #[ensures(result)]
 #[ensures(result ==> m.len() == PMap(m.0.set(k, None)).len() + 1)]
@@ -23,13 +23,15 @@ fn len_def1<K, V: ?Sized>(m: PMap<K, V>, k: K) -> bool {true}
 
 impl<K, V: ?Sized> PMap<K, V> {
     #[trusted]
-    #[logic]
+    #[logic(('_) -> '_)]
     #[ensures(result >= 0)]
     pub fn len(self) -> Int {
         absurd
     }
 
-    #[logic]
+
+    #[base_logic]
+    #[creusot::prusti::home_sig="('x, '_, 'x) -> 'x"] // Hack while we don't support constructors
     #[ensures(self.contains(k) ==> result.len() == self.len())]
     #[ensures(!self.contains(k) ==> result.len() == self.len() + 1)]
     pub fn insert(self, k: K, v: V) -> Self {
@@ -37,36 +39,38 @@ impl<K, V: ?Sized> PMap<K, V> {
         PMap(self.0.set(k, Some(v.make_sized())))
     }
 
-    #[logic]
+    #[base_logic]
+    #[creusot::prusti::home_sig="('x, '_) -> 'x"] // Hack while we don't support constructors
     #[ensures(result.len() == if self.contains(k) {self.len() - 1} else {self.len()})]
     pub fn remove(self, k: K) -> Self {
         len_def1(self, k);
         PMap(self.0.set(k, None))
     }
 
-    #[logic]
+    #[logic(('x, '_) -> 'x)]
     #[why3::attr = "inline:trivial"]
     pub fn get(self, k: K) -> Option<SizedW<V>>{
         self.0.get(k)
     }
 
-    #[logic]
-    pub fn lookup_ghost(self, k: K) -> SizedW<V> {
+    #[logic(('x, '_) -> 'x)]
+    pub fn lookup_unsized(self, k: K) -> SizedW<V> {
         unwrap(self.0.get(k))
     }
 
-    #[logic]
+    #[logic(('x, '_) -> 'x)]
     pub fn lookup(self, k: K) -> V
         where V: Sized{
         *unwrap(self.0.get(k))
     }
 
-    #[logic]
+    #[logic(('_, '_) -> '_)]
     pub fn contains(self, k: K) -> bool {
         self.0.get(k) != None
     }
 
-    #[logic]
+    #[base_logic]
+    #[creusot::prusti::home_sig="() -> '_"] // Hack while we don't support constructors
     //#[ensures(len_def0(result))]
     #[ensures(result.len() == 0)]
     pub fn empty() -> Self {
@@ -74,39 +78,38 @@ impl<K, V: ?Sized> PMap<K, V> {
     }
 
 
-    #[predicate]
+    #[logic(('_) -> '_)]
     pub fn is_empty(self) -> bool {
         self.ext_eq(PMap::empty())
     }
 
-    #[predicate]
+    #[logic(('_, '_) -> '_)]
     pub fn disjoint(self, other: Self) -> bool {
         pearlite!{forall<k: K> !self.contains(k) || !other.contains(k)}
     }
 
-    #[predicate]
+    #[logic(('_, '_) -> '_)]
     pub fn subset(self, other: Self) -> bool {
         pearlite!{forall<k: K> self.contains(k) ==> other.get(k) == self.get(k)}
     }
 
 
     #[trusted]
-    #[logic]
+    #[logic(('x, 'x) -> 'x)]
     #[requires(self.disjoint(other))]
-    #[ensures(forall<k: K>
-    result.get(k) == if self.contains(k) {
-    self.get(k)
+    #[ensures(forall<k: K> result.get(k) == if self.contains(k) {
+        self.get(k)
     } else if other.contains(k) {
-    other.get(k)
+        other.get(k)
     } else {
-    None
+        None
     })]
     #[ensures(result.len() == self.len() + other.len())]
     pub fn union(self, other: Self) -> Self {
         absurd
     }
 
-    #[logic]
+    #[logic(('_, '_, '_) -> '_)]
     #[requires(self.contains(k))]
     #[requires(self.disjoint(other))]
     #[ensures(result ==> self.remove(k).union(other) == self.union(other).remove(k))]
@@ -115,7 +118,7 @@ impl<K, V: ?Sized> PMap<K, V> {
         self.remove(k).union(other).ext_eq(self.union(other).remove(k))
     }
 
-    #[logic]
+    #[logic(('_, '_) -> '_)]
     #[ensures(result ==> self == other)]
     #[ensures((forall<k: K> self.0.get(k) == other.0.get(k)) ==> result)]
     pub fn ext_eq(self, other: Self) -> bool {

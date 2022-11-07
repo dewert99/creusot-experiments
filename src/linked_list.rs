@@ -1,4 +1,4 @@
-use creusot_contracts::*;
+use creusot_contracts::{logic as base_logic, prusti_prelude::*};
 use crate::ghost_ptr::*;
 use crate::p_map::PMap;
 use crate::helpers::unwrap;
@@ -12,7 +12,7 @@ type Ptr<T> = GhostPtr<Node<T>>;
 type Token<T> = GhostToken<Node<T>>;
 type TokenM<T> = PMap<Ptr<T>, Node<T>>;
 
-#[predicate]
+#[predicate('_, '_, '_)]
 #[variant(token.len())]
 #[ensures(ptr == other ==> result)]
 #[ensures(token.contains(ptr) && token.lookup(ptr).next == other ==> result)]
@@ -27,7 +27,7 @@ fn lseg<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> bool {
     }
 }
 
-#[logic]
+#[logic(('x, 'x, 'x) -> 'x)]
 #[variant(token.len())]
 #[requires(lseg(ptr, other, token))]
 #[ensures(result.subset(token))]
@@ -43,7 +43,7 @@ fn lseg_basis<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> TokenM<T> {
     }
 }
 
-#[logic]
+#[logic(('x, 'x, 'x) -> 'x)]
 #[variant(token.len())]
 #[requires(lseg(ptr, other, token))]
 #[ensures(result.len() == lseg_basis(ptr, other, token).len())]
@@ -57,12 +57,12 @@ fn lseg_seq<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> Seq<T> {
     }
 }
 
-#[predicate]
+#[predicate('_, '_, '_)]
 fn lseg_strict<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> bool {
     lseg(ptr, other, token) && lseg_basis(ptr, other, token).ext_eq(token)
 }
 
-#[logic]
+#[logic(('_, '_, '_, '_) -> '_)]
 #[variant(token1.len())]
 #[requires(lseg(ptr, other, token1))]
 #[requires(token1.subset(token2))]
@@ -79,7 +79,7 @@ fn lseg_super<T>(ptr: Ptr<T>, other: Ptr<T>, token1: TokenM<T>, token2: TokenM<T
     }
 }
 
-#[logic]
+#[logic(('_, '_, '_, '_, '_) -> '_)]
 #[variant(token12.len())]
 #[requires(token12.disjoint(token23))]
 #[requires(lseg(ptr1, ptr2, token12))]
@@ -117,7 +117,7 @@ pub struct LinkedList<T>{
 
 impl<T> LinkedList<T> {
 
-    #[predicate]
+    #[predicate('_)]
     pub fn invariant(self) -> bool {
         let LinkedList{head, tail, token} = self;
         if head == Ptr::null_logic() {
@@ -128,7 +128,7 @@ impl<T> LinkedList<T> {
         }
     }
 
-    #[logic]
+    #[logic(('x) -> 'x)]
     #[requires(self.invariant())]
     pub fn to_seq(self) -> Seq<T> {
         let LinkedList{head, tail, token} = self;
@@ -139,16 +139,16 @@ impl<T> LinkedList<T> {
         }
     }
 
-    #[logic]
+    #[logic(('_) -> '_)]
     #[why3::attr = "inline:trivial"]
     pub fn len(self) -> Int {
         self.to_seq().len()
     }
 
-    #[requires((*self).invariant())]
+    #[requires(self.invariant())]
     #[requires(self.head != Ptr::null_logic())]
-    #[ensures(result.data == (*self).to_seq().head() && (^self).to_seq().ext_eq((*self).to_seq().tail()))]
-    #[ensures((^self).invariant())]
+    #[ensures(result.data == old(self.to_seq().head()) && self.to_seq().ext_eq(old(self.to_seq().tail())))]
+    #[ensures(self.invariant())]
     fn dequeue_box(&mut self) -> Box<Node<T>> {
         let old_self = ghost!(self);
         let LinkedList{head, ref tail, token} = self;
@@ -162,10 +162,10 @@ impl<T> LinkedList<T> {
         res
     }
 
-    #[requires((*self).invariant())]
+    #[requires(self.invariant())]
     #[requires(self.head != Ptr::null_logic())]
-    #[ensures((^self).to_seq().ext_eq(Seq::singleton(val.data).concat((*self).to_seq())))]
-    #[ensures((^self).invariant())]
+    #[ensures(self.to_seq().ext_eq(Seq::singleton(val.data).concat(old(self.to_seq()))))]
+    #[ensures(self.invariant())]
     fn push_box(&mut self, val: Box<Node<T>>) {
         let old_self: Ghost<&mut Self> = ghost!(self);
         let mut val = val;
@@ -182,9 +182,9 @@ impl<T> LinkedList<T> {
         LinkedList{head: Ptr::null(), tail: Ptr::null(), token: Token::new()}
     }
 
-    #[requires((*self).invariant())]
-    #[ensures((^self).invariant())]
-    #[ensures((^self).to_seq().ext_eq((*self).to_seq().push(elt)))]
+    #[requires(self.invariant())]
+    #[ensures(self.invariant())]
+    #[ensures(self.to_seq().ext_eq(old(self.to_seq()).push(elt)))]
     pub fn enqueue(&mut self, elt: T) {
         let old_self = ghost!(self);
         let LinkedList{head, tail, token} = self;
@@ -209,11 +209,11 @@ impl<T> LinkedList<T> {
         }
     }
 
-    #[requires((*self).invariant())]
-    #[ensures(self.len() == 0 ==> result == None && *self == ^self)]
-    #[ensures(self.len() != 0 ==>
-        result == Some((*self).to_seq().head()) && (^self).to_seq().ext_eq((*self).to_seq().tail()))]
-    #[ensures((^self).invariant())]
+    #[requires(self.invariant())]
+    #[ensures(old(self.len()) == 0 ==> result == None && old(*self) == *self)]
+    #[ensures(old(self.len()) != 0 ==>
+        result == Some(old(self.to_seq()).head()) && self.to_seq().ext_eq(old(self.to_seq()).tail()))]
+    #[ensures(self.invariant())]
     pub fn dequeue(&mut self) -> Option<T> {
         if self.head.is_null() {
             None
@@ -222,11 +222,11 @@ impl<T> LinkedList<T> {
         }
     }
 
-    #[requires((*self).invariant())]
-    #[ensures((^self).invariant())]
-    #[ensures(forall<i: Int> 0 <= i && i < (^self).len() ==>
-        (^self).to_seq()[i] == (*self).to_seq()[(*self).len() - 1 - i])]
-    #[ensures((^self).len() == (*self).len())]
+    #[requires(self.invariant())]
+    #[ensures(self.invariant())]
+    #[ensures(forall<i: Int> 0 <= i && i < (*self).len() ==>
+        self.to_seq()[i] == old(self.to_seq())[(*self).len() - 1 - i])]
+    #[ensures(self.len() == old(self.len()))]
     pub fn reverse(&mut self) {
         if self.head.is_null() {
             return
@@ -255,10 +255,10 @@ impl<T> LinkedList<T> {
         *self = new_list
     }
 
-    #[requires((*self).invariant())]
+    #[requires(self.invariant())]
     #[ensures(result.invariant())]
-    #[ensures(result.curr_seq() == (*self).to_seq())]
-    #[ensures(result.fut_inv() ==> (^self).invariant() && result.fut_seq() == (^self).to_seq())]
+    #[ensures(result.curr_seq() == old(self.to_seq()))]
+    #[after_expiry(result.fut_inv() ==> self.invariant() && result.fut_seq() == self.to_seq())]
     pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         let token = &mut self.token;
         IterMut { curr: self.head, token, tail: ghost!(self.tail)}
@@ -315,56 +315,58 @@ pub struct IterMut<'a, T>{
     tail: Ghost<Ptr<T>>,
 }
 
-#[predicate]
-fn token_shrink<T>(t: Token<T>, ft: Token<T>) -> bool {
-    pearlite!{forall<p: Ptr<T>> (@ft).contains(p) ==> (@t).contains(p)}
+#[base_logic]
+#[creusot::prusti::home_sig="('_, '_, 'x) -> 'x"]
+fn linked_list<T>(head: Ptr<T>, tail: Ptr<T>, token: Token<T>) -> LinkedList<T> {
+    LinkedList{head, tail, token}
 }
 
-impl<'a, T> IterMut<'a, T> {
-
-    #[predicate]
-    pub fn invariant(self) -> bool {
+impl<'curr, T> IterMut<'curr, T> {
+    #[predicate('_)]
+    fn fut_inv(self) -> bool {
         LinkedList{head: self.curr, tail: *self.tail, token: *self.token}.invariant()
     }
 
-    #[predicate]
+    #[logic(('x) -> 'curr)]
+    #[requires(self.fut_inv())]
+    pub fn fut_seq(self) -> Seq<T> {
+        linked_list(self.curr, *self.tail, *self.token).to_seq()
+    }
+
+    #[predicate('_, '_)]
     pub fn produces(self, fut: Self) -> bool {
         pearlite!{fut.fut_inv() ==> self.fut_inv()}
     }
 
-    #[law]
-    #[requires(s1.produces(s2) && s2.produces(s3))]
-    #[ensures(s1.produces(s3))]
-    pub fn produces_trans(s1: Self, s2: Self, s3: Self) {}
+    // #[law('_, '_, '_)]
+    // #[requires(s1.produces(s2) && s2.produces(s3))]
+    // #[ensures(s1.produces(s3))]
+    // pub fn produces_trans(s1: Self, s2: Self, s3: Self) {}
+}
 
-    #[logic]
+impl<'a, T> IterMut<'a, T> {
+    #[predicate('curr)]
+    pub fn invariant(self) -> bool {
+        LinkedList{head: self.curr, tail: *self.tail, token: *self.token}.invariant()
+    }
+
+    #[logic(('curr) -> 'curr)]
     #[requires(self.invariant())]
     #[ensures(result.len() == self.token.shallow_model().len())]
     pub fn curr_seq(self) -> Seq<T> {
-        LinkedList{head: self.curr, tail: *self.tail, token: *self.token}.to_seq()
+        linked_list(self.curr, *self.tail, *self.token).to_seq()
     }
 
-    #[predicate]
-    fn fut_inv(self) -> bool {
-        pearlite!{LinkedList{head: self.curr, tail: *self.tail, token: ^self.token}.invariant()}
-    }
-
-    #[logic]
-    #[requires(self.fut_inv())]
-    pub fn fut_seq(self) -> Seq<T> {
-        pearlite!{LinkedList{head: self.curr, tail: *self.tail, token: ^self.token}.to_seq()}
-    }
-
-    #[requires((*self).invariant())]
-    #[ensures((*self).curr_seq().len() == 0 ==> result == None && *self == ^self)]
-    #[ensures((*self).curr_seq().len() != 0 ==> match result {
+    #[requires(self.invariant())]
+    #[ensures(old(self.curr_seq()).len() == 0 ==> result == None && old(*self) == *self)]
+    #[after_expiry('a, old(self.curr_seq()).len() != 0 ==> match result {
         None => false,
-        Some(elt) => Seq::singleton(*elt).concat((^self).curr_seq()).ext_eq((*self).curr_seq()) &&
-            ((*self).fut_inv() ==> Seq::singleton(^elt).concat((^self).fut_seq()).ext_eq((*self).fut_seq()))
+        Some(elt) => curr(Seq::singleton(*elt).concat(self.curr_seq())).ext_eq(old(self.curr_seq())) &&
+            (old(*self).fut_inv() ==> Seq::singleton(*elt).concat(curr(*self).fut_seq()).ext_eq(old(*self).fut_seq()))
     })]
-    #[ensures((^self).fut_inv() ==> (*self).fut_inv())]
-    #[ensures((^self).invariant())]
-    #[ensures((*self).produces(^self))]
+    #[after_expiry('a, curr(*self).fut_inv() ==> old(*self).fut_inv())]
+    #[ensures(self.invariant())]
+    #[after_expiry('a, old(*self).produces(curr(*self)))]
     pub fn next(&mut self) -> Option<&'a mut T> {
         let old_self = ghost!(self);
         let IterMut { curr, token, ..} = self;
@@ -394,8 +396,8 @@ impl<'a, T> IterMut<'a, T> {
     }
 
     #[requires(self.invariant())]
-    #[ensures(self.fut_inv())]
-    #[ensures(self.curr_seq() == self.fut_seq())]
+    #[after_expiry('a, self.fut_inv())]
+    #[after_expiry('a, old(self.curr_seq()) == self.fut_seq())]
     pub fn drop(self) {
         let IterMut { curr, token, ..} = self;
     }

@@ -1,6 +1,6 @@
 // Inspired by https://plv.mpi-sws.org/rustbelt/ghostcell/ https://rust-unofficial.github.io/too-many-lists/fifth.html
 
-use creusot_contracts::*;
+use creusot_contracts::{prusti_prelude::*, logic::*};
 use ::std::cell::UnsafeCell;
 use ::std::marker::PhantomData;
 use ::std::ptr::NonNull;
@@ -31,7 +31,7 @@ impl<T: ?Sized> ShallowModel for GhostToken<T> {
     type ShallowModelTy = PMap<GhostPtr<T>, T>;
 
     #[trusted]
-    #[logic]
+    #[logic(('x) -> 'x)]
     fn shallow_model(self) -> Self::ShallowModelTy {
         absurd
     }
@@ -48,12 +48,12 @@ impl<T: ?Sized> GhostToken<T> {
     /// Gain permission to all of the [`GhostPtr`]s managed by other
     // Safety other cannot be accessed so it's pointers still only have one owner
     #[trusted]
-    #[ensures((@*self).disjoint(@other))]
-    #[ensures((@^self) == (@*self).union(@other))]
+    #[ensures(old(@self).disjoint(@other))]
+    #[ensures((@self) == old(@self).union(@other))]
     pub fn absorb(&mut self, other: GhostToken<T>) {}
 
     #[trusted]
-    #[law]
+    #[law('_, '_, '_)]
     #[requires((@self).contains(ptr1) && (@self).contains(ptr2))]
     #[requires(ptr1.addr_logic() == ptr2.addr_logic())]
     #[ensures(result)]
@@ -70,8 +70,8 @@ impl<T: ?Sized> GhostToken<T> {
 impl<T> GhostPtr<T> {
     /// Creates a [`GhostPtr`] with initial value `val` and gives `t` permission to it
     // Safety this pointer was newly allocated no other GhostToken could have permission to it
-    #[ensures(!(@*t).contains(result))]
-    #[ensures(@^t == (@*t).insert(result, val))]
+    #[ensures(!old(@t).contains(result))]
+    #[ensures(@t == old(@t).insert(result, val))]
     pub fn new_in(val: T, t: &mut GhostToken<T>) -> Self {
         Self::from_box_in(Box::new(val), t)
     }
@@ -92,9 +92,9 @@ impl<T> GhostPtr<T> {
 
     /// Deallocates `self` and returns its stored value
     // Safety `self` is now dangling but since `t` doesn't have permission anymore no token does so this is okay
-    #[requires((@*t).contains(self))]
-    #[ensures(result == (@*t).lookup(self))]
-    #[ensures((@^t) == (@*t).remove(self))]
+    #[requires((@t).contains(self))]
+    #[ensures(result == old(@t).lookup(self))]
+    #[ensures(@t == old(@t).remove(self))]
     pub fn take(self, t: &mut GhostToken<T>) -> T {
         *self.take_box(t)
     }
@@ -105,8 +105,8 @@ impl<T: ?Sized> GhostPtr<T> {
     /// Creates a [`GhostPtr`] with initial value `val` and gives `t` permission to it
     // Safety this pointer was newly allocated no other GhostToken could have permission to it
     #[trusted]
-    #[ensures(!(@*t).contains(result))]
-    #[ensures(@^t == (@*t).insert(result, *val))]
+    #[ensures(!old(@t).contains(result))]
+    #[ensures(@t == old(@t).insert(result, *val))]
     pub fn from_box_in(val: Box<T>, t: &mut GhostToken<T>) -> Self {
         let ptr = Box::into_raw(val);
         unsafe { GhostPtr(ptr) }
@@ -120,7 +120,7 @@ impl<T: ?Sized> GhostPtr<T> {
     }
 
     #[trusted]
-    #[logic]
+    #[logic(() -> '_)]
     #[ensures(forall<t: GhostToken<T>> !(@t).contains(result))]
     pub fn null_logic() -> Self {
         absurd
@@ -131,7 +131,7 @@ impl<T: ?Sized> GhostPtr<T> {
     // `t` cannot be used to mutably borrow `self` as long as the shared lifetime lasts
     #[trusted]
     #[requires((@t).contains(self))]
-    #[ensures(*result == *(@t).lookup_ghost(self))]
+    #[ensures(*result == *(@t).lookup_unsized(self))]
     pub fn borrow(self, t: &GhostToken<T>) -> &T {
         unsafe {&*self.0 }
     }
@@ -141,33 +141,33 @@ impl<T: ?Sized> GhostPtr<T> {
     // `t` cannot be used to borrow `self` as long as the mutable lifetime lasts
     // The returned token doesn't have access to `self` so it can't access it either
     #[trusted]
-    #[requires((@**t).contains(self))]
-    #[ensures(*result == *(@**t).lookup_ghost(self))]
-    #[ensures(@*^t == (@**t).remove(self))]
-    #[ensures(@^*t == (@^^t).insert(self, ^result))]
-    #[ensures(!(@^^t).contains(self))]
+    #[requires((@t).contains(self))]
+    #[ensures(*result == *old(@t).lookup_unsized(self))]
+    #[ensures(@t == old(@t).remove(self))]
+    #[after_expiry('i, @old(*t) == (@curr(*t)).insert(self, *result))]
+    #[after_expiry('i, !(@curr(*t)).contains(self))]
     pub fn reborrow<'o, 'i>(self, t: &'o mut &'i mut GhostToken<T>) -> &'i mut T {
         unsafe { &mut *self.0}
     }
     // (self, t: &mut GhostToken<T>) -> (&mut T, &mut GhostToken<T>)
 
     #[trusted] // shouldn't be needed
-    #[requires((@*t).contains(self))]
-    #[ensures(*result == *(@*t).lookup_ghost(self))]
-    #[ensures(@^t == (@*t).insert(self, ^result))]
+    #[requires((@t).contains(self))]
+    #[ensures(*result == *old(@t).lookup_unsized(self))]
+    #[after_expiry(@t == old(@t).insert(self, *result))]
     pub fn borrow_mut(self, t: &mut GhostToken<T>) -> &mut T {
         let mut t = t;
         self.reborrow(&mut t)
     }
 
     #[trusted]
-    #[requires((@*t1).contains(self))]
-    #[ensures(@^t1 == (@^t1).remove(self))]
-    #[ensures(@^t2 == (@^t2).insert(self, *(@*t1).lookup_ghost(self)))]
+    #[requires((@t1).contains(self))]
+    #[ensures(@t1 == old(@t1).remove(self))]
+    #[ensures(@t2 == old(@t2).insert(self, *old(@t1).lookup_unsized(self)))]
     pub fn transfer(self, t1: &mut GhostToken<T>, t2: &mut GhostToken<T>) {}
 
     #[trusted]
-    #[logic]
+    #[logic(('_) -> '_)]
     pub fn addr_logic(self) -> Int {
         absurd
     }
@@ -182,9 +182,9 @@ impl<T: ?Sized> GhostPtr<T> {
     /// Deallocates `self` and returns its stored value
     // Safety `self` is now dangling but since `t` doesn't have permission anymore no token does so this is okay
     #[trusted]
-    #[requires((@*t).contains(self))]
-    #[ensures(*result == *(@*t).lookup_ghost(self))]
-    #[ensures((@^t) == (@*t).remove(self))]
+    #[requires((@t).contains(self))]
+    #[ensures(*result == *old(@t).lookup_unsized(self))]
+    #[ensures((@t) == old(@t).remove(self))]
     pub fn take_box(self, t: &mut GhostToken<T>) -> Box<T> {
         unsafe { Box::from_raw(self.0) }
     }
