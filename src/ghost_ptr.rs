@@ -1,6 +1,6 @@
 // Inspired by https://plv.mpi-sws.org/rustbelt/ghostcell/ https://rust-unofficial.github.io/too-many-lists/fifth.html
 
-use creusot_contracts::{prusti_prelude::*, logic::*};
+use creusot_contracts::{prusti_prelude::*, logic::*, extern_spec};
 use ::std::cell::UnsafeCell;
 use ::std::marker::PhantomData;
 use ::std::ptr::NonNull;
@@ -11,45 +11,33 @@ use crate::p_map::*;
 /// Models a fragment of the heap that maps the [`GhostPtr`]s it has permission to their value.
 /// At most one [`GhostToken`] has permission to each [`GhostPtr`]
 /// No [`GhostToken`] has permission to a dangling [`GhostPtr`]
-#[trusted] // Means opaque in this context
-pub struct GhostToken<T: ?Sized>(PhantomData<T>);
+pub struct GhostToken<T: ?Sized>(Ghost<PMap<GhostPtr<T>, T>>, PhantomData<T>);
 
 /// Thin wrapper over a raw pointer managed by a [`GhostPtr`]
-pub struct GhostPtr<T: ?Sized>(*mut T);
-
-impl<T: ?Sized> Copy for GhostPtr<T> {}
-
-impl<T: ?Sized> Clone for GhostPtr<T> {
-    #[ensures(result == *self)]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
+pub type GhostPtr<T> = *mut T;
 
 
 impl<T: ?Sized> ShallowModel for GhostToken<T> {
     type ShallowModelTy = PMap<GhostPtr<T>, T>;
 
-    #[trusted]
     #[logic(('x) -> 'x)]
     fn shallow_model(self) -> Self::ShallowModelTy {
-        absurd
+        *self.0
     }
 }
 
 impl<T: ?Sized> GhostToken<T> {
     /// Creates a new [`GhostPtr`] that has no permission
-    #[trusted]
     #[ensures(@result == PMap::empty())]
     pub fn new() -> Self {
-        GhostToken(PhantomData)
+        GhostToken(ghost!(PMap::empty()),PhantomData)
     }
 
     /// Gain permission to all of the [`GhostPtr`]s managed by other
     // Safety other cannot be accessed so it's pointers still only have one owner
     #[trusted]
     #[ensures(old(@self).disjoint(@other))]
-    #[ensures((@self) == old(@self).union(@other))]
+    #[ensures((@*self) == old(@self).union(@other))]
     pub fn absorb(&mut self, other: GhostToken<T>) {}
 
     #[trusted]
@@ -58,7 +46,7 @@ impl<T: ?Sized> GhostToken<T> {
     #[requires(ptr1.addr_logic() == ptr2.addr_logic())]
     #[ensures(result)]
     #[ensures(result ==> ptr1 == ptr2)]
-    pub fn injective_lemma(self, ptr1: GhostPtr<T>, ptr2: GhostPtr<T>) -> bool {
+    fn injective_lemma(self, ptr1: GhostPtr<T>, ptr2: GhostPtr<T>) -> bool {
         absurd
     }
 
@@ -67,17 +55,19 @@ impl<T: ?Sized> GhostToken<T> {
     pub fn drop(self) {}
 }
 
-impl<T> GhostPtr<T> {
+impl<T: ?Sized> GhostPtrExt<T> for GhostPtr<T> {
     /// Creates a [`GhostPtr`] with initial value `val` and gives `t` permission to it
     // Safety this pointer was newly allocated no other GhostToken could have permission to it
-    #[ensures(!old(@t).contains(result))]
-    #[ensures(@t == old(@t).insert(result, val))]
-    pub fn new_in(val: T, t: &mut GhostToken<T>) -> Self {
+    #[ensures(!old(@*t).contains(result))]
+    #[ensures(@*t == old(@*t).insert(result, val))]
+    fn new_in(val: T, t: &mut GhostToken<T>) -> Self
+        where T: Sized {
         Self::from_box_in(Box::new(val), t)
     }
 
     #[ensures(@(result.1) == PMap::empty().insert(result.0, val))]
-    pub fn new_pair(val: T) -> (Self, GhostToken<T>) {
+    fn new_pair(val: T) -> (Self, GhostToken<T>)
+        where T: Sized {
         let mut t = GhostToken::new();
         (GhostPtr::new_in(val, &mut t), t)
     }
@@ -86,43 +76,35 @@ impl<T> GhostPtr<T> {
     // Safety even though this pointer is dangling no GhostToken has permission to it so it's okay
     #[trusted]
     #[ensures(result == Self::null_logic())]
-    pub fn null() -> Self {
-        GhostPtr(ptr::null_mut())
+    fn null() -> Self
+        where T: Sized {
+        ptr::null_mut()
     }
 
     /// Deallocates `self` and returns its stored value
     // Safety `self` is now dangling but since `t` doesn't have permission anymore no token does so this is okay
-    #[requires((@t).contains(self))]
-    #[ensures(result == old(@t).lookup(self))]
-    #[ensures(@t == old(@t).remove(self))]
-    pub fn take(self, t: &mut GhostToken<T>) -> T {
+    #[requires((@*t).contains(self))]
+    #[ensures(result == old(@*t).lookup(self))]
+    #[ensures(@*t == old(@*t).remove(self))]
+    fn take(self, t: &mut GhostToken<T>) -> T
+        where T: Sized {
         *self.take_box(t)
     }
-}
-
-impl<T: ?Sized> GhostPtr<T> {
 
     /// Creates a [`GhostPtr`] with initial value `val` and gives `t` permission to it
     // Safety this pointer was newly allocated no other GhostToken could have permission to it
     #[trusted]
-    #[ensures(!old(@t).contains(result))]
-    #[ensures(@t == old(@t).insert(result, *val))]
-    pub fn from_box_in(val: Box<T>, t: &mut GhostToken<T>) -> Self {
+    #[ensures(!old(@*t).contains(result))]
+    #[ensures(@*t == old(@*t).insert(result, *val))]
+    fn from_box_in(val: Box<T>, t: &mut GhostToken<T>) -> Self {
         let ptr = Box::into_raw(val);
-        unsafe { GhostPtr(ptr) }
-    }
-
-    /// Check if `self` was created with [`GhostPtr::null`]
-    #[trusted]
-    #[ensures(result == (self == Self::null_logic()))]
-    pub fn is_null(self) -> bool {
-        self.0.is_null()
+        unsafe { ptr }
     }
 
     #[trusted]
     #[logic(() -> '_)]
     #[ensures(forall<t: GhostToken<T>> !(@t).contains(result))]
-    pub fn null_logic() -> Self {
+    fn null_logic() -> Self {
         absurd
     }
 
@@ -132,8 +114,8 @@ impl<T: ?Sized> GhostPtr<T> {
     #[trusted]
     #[requires((@t).contains(self))]
     #[ensures(*result == *(@t).lookup_unsized(self))]
-    pub fn borrow(self, t: &GhostToken<T>) -> &T {
-        unsafe {&*self.0 }
+    fn borrow(self, t: &GhostToken<T>) -> &T {
+        unsafe {&*self }
     }
 
     /// Mutably borrows `self` and returns a view of the rest of [`GhostPtrs`] stored in `t`
@@ -141,52 +123,80 @@ impl<T: ?Sized> GhostPtr<T> {
     // `t` cannot be used to borrow `self` as long as the mutable lifetime lasts
     // The returned token doesn't have access to `self` so it can't access it either
     #[trusted]
-    #[requires((@t).contains(self))]
-    #[ensures(*result == *old(@t).lookup_unsized(self))]
-    #[ensures(@t == old(@t).remove(self))]
-    #[after_expiry('i, @old(*t) == (@curr(*t)).insert(self, *result))]
-    #[after_expiry('i, !(@curr(*t)).contains(self))]
-    pub fn reborrow<'o, 'i>(self, t: &'o mut &'i mut GhostToken<T>) -> &'i mut T {
-        unsafe { &mut *self.0}
+    #[requires((@**t).contains(self))]
+    #[ensures(*result == *old(@**t).lookup_unsized(self))]
+    #[ensures(@**t == old(@**t).remove(self))]
+    #[after_expiry('i, @*old(*t) == (@*curr(*t)).insert(self, *result))]
+    #[after_expiry('i, !(@*curr(*t)).contains(self))]
+    fn reborrow<'o, 'i>(self, t: &'o mut &'i mut GhostToken<T>) -> &'i mut T {
+        unsafe { &mut *self}
     }
     // (self, t: &mut GhostToken<T>) -> (&mut T, &mut GhostToken<T>)
 
     #[trusted] // shouldn't be needed
-    #[requires((@t).contains(self))]
-    #[ensures(*result == *old(@t).lookup_unsized(self))]
-    #[after_expiry(@t == old(@t).insert(self, *result))]
-    pub fn borrow_mut(self, t: &mut GhostToken<T>) -> &mut T {
+    #[requires((@*t).contains(self))]
+    #[ensures(*result == *old(@*t).lookup_unsized(self))]
+    #[after_expiry(@*t == old(@*t).insert(self, *result))]
+    fn borrow_mut(self, t: &mut GhostToken<T>) -> &mut T {
         let mut t = t;
         self.reborrow(&mut t)
     }
 
     #[trusted]
-    #[requires((@t1).contains(self))]
-    #[ensures(@t1 == old(@t1).remove(self))]
-    #[ensures(@t2 == old(@t2).insert(self, *old(@t1).lookup_unsized(self)))]
-    pub fn transfer(self, t1: &mut GhostToken<T>, t2: &mut GhostToken<T>) {}
+    #[requires((@*t1).contains(self))]
+    #[ensures(@*t1 == old(@*t1).remove(self))]
+    #[ensures(@*t2 == old(@*t2).insert(self, *old(@t1).lookup_unsized(self)))]
+    fn transfer(self, t1: &mut GhostToken<T>, t2: &mut GhostToken<T>) {}
 
     #[trusted]
     #[logic(('_) -> '_)]
-    pub fn addr_logic(self) -> Int {
+    fn addr_logic(self) -> Int {
         absurd
-    }
-
-    // Safety since addr_logic is uninterpreted this just claims ptr::addr is deterministic
-    #[trusted]
-    #[ensures(@result == self.addr_logic())]
-    pub fn addr(self) -> usize {
-        self.0.to_raw_parts().0 as usize
     }
 
     /// Deallocates `self` and returns its stored value
     // Safety `self` is now dangling but since `t` doesn't have permission anymore no token does so this is okay
     #[trusted]
-    #[requires((@t).contains(self))]
-    #[ensures(*result == *old(@t).lookup_unsized(self))]
-    #[ensures((@t) == old(@t).remove(self))]
-    pub fn take_box(self, t: &mut GhostToken<T>) -> Box<T> {
-        unsafe { Box::from_raw(self.0) }
+    #[requires((@*t).contains(self))]
+    #[ensures(*result == *old(@*t).lookup_unsized(self))]
+    #[ensures((@*t) == old(@*t).remove(self))]
+    fn take_box(self, t: &mut GhostToken<T>) -> Box<T> {
+        unsafe { Box::from_raw(self) }
+    }
+}
+
+pub trait GhostPtrExt<T: ?Sized>: Sized {
+    fn new_in(val: T, t: &mut GhostToken<T>) -> Self
+    where T: Sized;
+    fn new_pair(val: T) -> (Self, GhostToken<T>)
+    where T: Sized;
+    fn null() -> Self
+    where T: Sized;
+    fn take(self, t: &mut GhostToken<T>) -> T
+    where T: Sized;
+    fn from_box_in(val: Box<T>, t: &mut GhostToken<T>) -> Self;
+    #[logic(() -> '_)]
+    fn null_logic() -> Self;
+    fn borrow(self, t: &GhostToken<T>) -> &T;
+    fn reborrow<'o, 'i>(self, t: &'o mut &'i mut GhostToken<T>) -> &'i mut T;
+    fn borrow_mut(self, t: &mut GhostToken<T>) -> &mut T;
+    fn transfer(self, t1: &mut GhostToken<T>, t2: &mut GhostToken<T>);
+    #[logic(('_) -> '_)]
+    fn addr_logic(self) -> Int;
+    fn take_box(self, t: &mut GhostToken<T>) -> Box<T>;
+}
+
+extern_spec!{
+    impl<T> *mut T {
+        // Safety since addr_logic is uninterpreted this just claims ptr::addr is deterministic
+        #[trusted]
+        #[ensures(@result == self.addr_logic())]
+        fn addr(self) -> usize;
+
+        /// Check if `self` was created with [`GhostPtr::null`]
+        #[trusted]
+        #[ensures(result == (self == GhostPtr::<T>::null_logic()))]
+        fn is_null(self) -> bool;
     }
 }
 
