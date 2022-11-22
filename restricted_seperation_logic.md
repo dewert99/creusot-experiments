@@ -189,27 +189,29 @@ As an optimization we could only inhale and exhale invariants when relevant
  * When destructuring a shared reference
    * Inhale invariant (times arbitrarily small permission)
    * Assume the footprint function of the reference agrees with the heap
+ * At the end of the lifetime of a destructured shared reference
+   * Exhale the impure part of the invariant (times write the same permission that was previously inhaled)
+   * The pure part doesn't need to be asserted since it could not have changed
  * When destructuring a mutable reference
    * Inhale `cur` invariant (times write permission)
    * Assume the footprint function of the `cur` reference agrees with the heap
    * Handle prophecy encoding
- * At the end of the lifetime of a destructured a mutable reference
+ * At the end of the lifetime of a destructured mutable reference
    * Assume the footprint function of the `fin` reference agrees with the heap
    * Exhale `fin` invariant (times write permission)
- * `acc(t, perm)` where `t: *mut T` contains `t`s invariant times `perm`
+ * `acc(t as *mut T, perm)` contains `t`s invariant times `perm`
 
  Eg for the above
 ```rust
 trait Invariant {
     #[predicate] // Viper Predicate
-    #[ensures(self.inv_pure())]
-    fn inv(self) -> bool;
+    fn inv_heap(self) -> bool;
 
     #[logic] // Viper Function
     fn inv_pure(self) -> bool;
     
     #[logic]
-    #[requires(self.inv() * epsion?)] // this is actually heap dependent
+    #[requires(self.inv() * wildcard)] // this is actually heap dependent
     fn assume_footprint(self) -> bool;
 }
 
@@ -234,9 +236,8 @@ struct AccPtr{data: AccPtrInner, footprint: Heap}
 
 impl<'a, T> Invariant for AccPtr {
     #[predicate] // heap dependent
-    #[ensures(self.inv_pure())]
-    fn inv(self) -> bool {
-        acc(self.data.0) && self.inv_pure()
+    fn write(self) -> bool {
+        acc(self.data.0)
     }
 
     #[logic] // not heap dependent
@@ -245,7 +246,7 @@ impl<'a, T> Invariant for AccPtr {
     }
 
     #[logic]
-    #[requires(self.inv() * epsion?)] // this is actually heap dependent
+    #[requires(self.inv() * wildcard)] // this is actually heap dependent
     fn assume_footprint(self) -> bool {
         unsafe{*self.data.0 == self.footprint[self.data.0]}
     }
@@ -253,11 +254,13 @@ impl<'a, T> Invariant for AccPtr {
 
 impl MyTrait for AccPtr {
     fn impure(&self) {
-       inhale!(self.inv() * epsilon?); // before destructure
+       let _perm: Perm = havoc(); // arbitrarily small permission
+       inhale!(self.inv() * _perm && self.inv_pure()); // before destructure
        assume!(self.assume_footprint()); // before destructure
        let inner = &self.data; // destructures &self
        let ptr = inner.0; 
        unsafe{*ptr += 1}; // FAIL we don't have full permission
+       exhale!(self.inv() * _perm)
     }
 
     #[pure]
@@ -271,13 +274,13 @@ impl MyTrait for AccPtr {
 impl AccPtr {
    #[ensures(fin(self).pure() == cur(self).pure() + 1)]
    fn impure2(&mut self) {
-      inhale!(cur(self).inv()); // before destructure
+      inhale!(cur(self).inv_heap() && cur(self).inv_pure()); // before destructure
       assume!(cur(self).assume_footprint()); // before destructure
       let inner = &mut self.data; // destructures &mut self
       let ptr = inner.0;
-      unsafe{*ptr += 1}; // FAIL we don't have full permission
+      unsafe{*ptr += 1}; // This is ok
       assume!(fin(self).assume_footprint()); // before expiry
-      exhale!(fin(self).inv()); // before expiry
+      exhale!(fin(self).inv() && fin(self).inv_pure()); // before expiry
    }
 }
 
@@ -287,9 +290,9 @@ fn bad() {
    // casting gives us access
    let y = AccPtr{data: AccPtrInner(r as *mut u32), footprint: havoc()};
    assume!(y.assume_footprint()); // after constructor
-   exhale!(y.inv()); // after constructor
+   exhale!(y.inv_heap() && y.inv_pure()); // after constructor
    test(&y); // the assertion would fail
-   inhale!(y.inv()); // before drop constructor
+   inhale!(y.inv_heap() && y.inv_pure()); // before drop constructor
    assume!(y.assume_footprint()); // before drop
    // r expires but we now have access
 }
@@ -298,7 +301,7 @@ Note: An advantage of this approach is that (program) functions involving types 
 This allows for the encapsulation of separation logic
 
 ### Dynamic Lifetimes
-One pattern in unsafe that so far hasn't been captured is the use of 'static to as a phony erased lifetime
+One pattern in unsafe that so far hasn't been captured is the use of 'static as a phony erased lifetime
 see https://docs.rs/yoke/latest/yoke/.
 
 Given a Box with some data in it we can get write permission to the pointer and create a 'static mutable reference but can then never free the memory, (basically we just implemented Box::leak)
@@ -444,8 +447,8 @@ fn interesting<'a>(x: &'a mut &'static u32, short_ref: &'a u32) {
 ```
 Note: Using this kind of system `*const T` and `*mut T` can be freely switched between and the main reason to choose `*mut T`
 is that it can give stronger guarantees about the type of access being returned.
-Note: Using this system `x as *const X == x as *const Y`,
-`acc(x as *const X) != acc(x as *const Y)` comes from `acc` meaning something different in both cases
+Note: Using this system all pointers would have the same type in the logic (casting is a no-op),
+but the type parameter passed to `acc` would affect its semantics
 
 ### Send / Sync
 Since we are using separation logic for raw pointers we would probably be fine if raw pointers were Send and Sync (at least when the underlying type is),
