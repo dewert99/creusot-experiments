@@ -176,6 +176,7 @@ Multiply permissions in heap dependent invariants by "surrounding context"
  * Full permission if owned or under mutable reference
  * Arbitrarily small permission if under shared reference
  * `p` if on the heap with permission `p`
+To avoid duplicating permissions structs with heap dependent invariants must not be Copy.
 We could then add a non heap dependent logical function mapping the snapshots of types with heap dependent invariants
 to the footprint of their invariant on the heap.
 This way pure/logical functions using these types still won't be heap dependent (unless they have an explicit heap dependent precondition)
@@ -381,7 +382,7 @@ we would like to be able to have covariance (this the case for Box, Vec, LinkedL
 in our struct in order to project mutability though the pointer.
 
 An unsound solution could be to allow copying out of a `&mut *const T` and immediately casting the result to a `*mut T`
-which seems safe since `T` is invariant in `&mut *const T` anyways but this would allow
+which seems safe since `T` is already invariant in `&mut *const T` but this would allow
 ```rust
 #[requires(acc(x))]
 fn bad<'a>(x: *const &'static u32, bad_ref: &'a u32) {
@@ -441,7 +442,7 @@ fn interesting<'a>(x: &'a mut &'static u32, short_ref: &'a u32) {
    *acc_ptr.deref_mut() = short_ref;
    // dropping acc_ptr inhales acc(ptr as *mut &'a u32)
    let x: &'static u32 = &0;
-   unsafe{*ptr = x}; // This would need a special rule to allow us write with a sub type and upgrade access
+   unsafe{ptr.write(x)}; // This would need a special rule to allow us write with a sub type and upgrade access
    // 'a expires (unblocking x) so we need to exhale acc(ptr as *mut &'static u32)
 }
 ```
@@ -487,4 +488,310 @@ struct WrapSS<T>(T);
 
 unsafe impl<T: VSend> Send for WrapSS<T> {}
 unsafe impl<T: VSync> Sync for WrapSS<T> {}
+```
+
+### Cells
+
+`UnsafeCell` could be given the api:
+```rust
+#[trusted]
+#[repr(transparent)]
+struct UnsafeCell<T>(core::cell::UnsafeCell<T>);
+
+impl<T> UnsafeCell<T> {
+    #[trusted]
+    #[logic] // unfortunately doing this means that getting a pointers address can't be pure
+    // We really just need something that can be used to index our model of the heap
+    pub fn ptr(self) -> *mut T {
+        absurd
+    }
+    
+    #[trusted]
+    fn raw_get(this: *const Self) -> *mut T { 
+        core::cell::UnsafeCell::raw_get(this as _) 
+    }
+    
+    #[trusted]
+    #[ensures(acc(result.ptr(), WRITE) && *(result.ptr()) == value)]
+    pub fn new(value: T) -> Self {
+        UnsafeCell(core::cell::UnsafeCell::new(value))
+    }
+    
+    #[trusted]
+    #[requires(acc(this, p) && acc((*this).ptr(), p))]
+    #[ensures(result == *(*this).ptr())]
+    #[after_expiry(acc(this, p) && acc((*this).ptr(), p))]
+    pub unsafe fn cast_ref<'a: 'a>(this: *const Self, p: Perm) -> &'a T {
+        unsafe{Self::raw_get(this) as _}
+    }
+
+    #[trusted]
+    #[requires(acc(this, p) && acc((*this).ptr(), WRITE))]
+    #[ensures(cur(result) == *(*this).ptr())]
+    #[after_expiry(acc(this, p) && acc((*this).ptr(), WRITE))]
+    #[after_expiry(fin(result) == *(*this).ptr())]
+    pub unsafe fn cast_mut<'a: 'a>(this: *const Self, p: Perm) -> &'a mut T {
+        unsafe{Self::raw_get(this) as _}
+    }
+
+
+    #[requires(acc((this).ptr(), p))]
+    #[ensures(result == *this.ptr())]
+    #[after_expiry(acc((this).ptr(), p))]
+    pub unsafe fn as_ref<'a: 'a>(&'a self, p: Perm) -> &'a T {
+        Self::cast_ref(self as _, infer)
+    }
+
+    #[requires(acc((this).ptr(), WRITE))]
+    #[ensures(result == *this.ptr())]
+    #[after_expiry(acc((this).ptr(), WRITE))]
+    #[after_expiry(fin(result) == *this.ptr())]
+    pub unsafe fn as_mut<'a: 'a>(&'a self) -> &'a mut T {
+        Self::cast_mut(self as _)
+    }
+}
+```
+
+We need the raw pointer associated with the `UnsafeCell` to never be directly exposed if we want to give permission to in `UnsafeCell::new()`
+otherwise we could do:
+```rust
+fn unsound() {
+    let x = UnsafeCell::new(5);
+    // gives access to `x.get()`
+    let ptr = x.get();
+    let x = x; //Move x
+    let bad = unsafe{*ptr}; // Undetected invalid dereference
+}
+
+#[requires(acc(x, WRITE))]
+#[ensures(acc(x as *const MaybeUninit<T>, WRITE) && (*x).is_uninit())]
+unsafe fn read<T>(x: *mut T) -> T {
+    x.read()
+}
+
+fn unsound2() {
+    let x = UnsafeCell::new(Box::new(5));
+    // gives access to `x.get()`
+    let the_box = unsafe{read(x.get())};
+    // consumes access to `x.get()`
+    drop(the_box);
+    // deallocates the box
+    drop(x);
+    // assumes x is still valid and deallocates it again causing double free error
+}
+```
+
+### Cell-like invariants
+
+The invariants for most cell-like involve copy-able write permissions with no aliasing guarantees.
+They potentially could be represented in Viper by threading quantified permissions though the program.
+
+```rust
+#[cell_like_invariant(acc(self.ref_count, WRITE) && acc(self.data, WRITE - (*self.ref_count / usize::MAX)))]
+// ^~ Needs a better name
+#[derive(Copy, Clone)] // no heap dependent regular invariant
+struct LeakRefCell<T> { // Not worrying about for this example
+   ref_count: *mut usize,
+   data: *mut T
+}
+
+#[invariant(acc(self.0.data, 1 / usize::MAX))]
+struct Ref<T>(LeakRefCell<T>);
+
+#[invariant(acc(self.0.data, WRITE))]
+struct RefMut<T>(LeakRefCell<T>);
+
+
+impl<T> LeakRefCell<T> {
+   // #[requires(forall<r: BoxRefCell<T>> acc(r.ref_count, WRITE) && acc(r.data, WRITE - (r.ref_count/usize::MAX)))]
+   // #[ensures(forall<r: BoxRefCell<T>> acc(r.ref_count, WRITE) && acc(r.data, WRITE - (r.ref_count/usize::MAX)))]
+   fn try_borrow(self) -> Option<Ref<T>> {
+      if unsafe { *self.ref_count } == usize::MAX {
+         None
+      } else {
+         unsafe { *self.ref_count += 1 };
+         Some(Ref(self))
+         // Creating the Ref exhaled 1/usize::MAX permission but the ensures clause required less since we increased the ref_count
+      }
+   }
+
+   // #[requires(forall<r: BoxRefCell<T>> acc(r.ref_count, WRITE) && acc(r.data, WRITE - (r.ref_count/usize::MAX)))]
+   // #[ensures(forall<r: BoxRefCell<T>> acc(r.ref_count, WRITE) && acc(r.data, WRITE - (r.ref_count/usize::MAX)))]
+   fn try_borrow_mut(self) -> Option<RefMut<T>> {
+      if unsafe { *self.ref_count } != 0 {
+         None
+      } else {
+         unsafe { *self.ref_count = usize::MAX };
+         Some(RefMut(self))
+         // Creating the RefMut exhaled usize::MAX permission but the ensures clause required less since we increased the ref_count
+      }
+   }
+}
+
+impl<T> Deref for Ref<T> {
+   type Target = T;
+
+   #[pure]
+   fn deref(&self) -> &T {
+      let Ref(x) = self; // destructure to inhale the invariant
+      x.data as &T
+      // this can be pure since we have permission in our regular invariant
+   }
+}
+
+impl<T> Deref for RefMut<T> {
+   type Target = T;
+
+   #[pure]
+   fn deref(&self) -> &T {
+      let RefMut(x) = self; // destructure to inhale the invariant
+      x.data as &T
+      // this can be pure since we have permission in our regular invariant
+   }
+}
+
+impl<T> DerefMut for RefMut<T> {
+   #[ensures(cur(result) == cur(self).deref() && fin(result) == fin(self).deref())]
+   fn deref_mut(&mut self) -> &mut T {
+      let RefMut(x) = self; // destructure to inhale the invariant
+      x.data as &mut T
+   }
+}
+
+// #[requires(forall<r: BoxRefCell<T>> acc(r.ref_count, WRITE) && acc(r.data, WRITE - (r.ref_count/usize::MAX)))]
+// #[ensures(forall<r: BoxRefCell<T>> acc(r.ref_count, WRITE) && acc(r.data, WRITE - (r.ref_count/usize::MAX)))]
+fn drop_ref(r: Ref) {
+   let Ref(x) = r; // destructure to inhale the invariant
+   unsafe{*x.ref_count -= 1}; // if this underflowed we would have had more than full permission
+   // we can use the extra permission we inhaled to handle the smaller ref_count
+}
+
+// #[requires(forall<r: BoxRefCell<T>> acc(r.ref_count, WRITE) && acc(r.data, WRITE - (r.ref_count/usize::MAX)))]
+// #[ensures(forall<r: BoxRefCell<T>> acc(r.ref_count, WRITE) && acc(r.data, WRITE - (r.ref_count/usize::MAX)))]
+fn drop_ref_mut(r: RefMut) {
+   let RefMut(x) = r; // destructure to inhale the invariant
+   unsafe{*x.ref_count = 0}; 
+   // we can use the extra permission we inhaled to handle the larger ref_count
+}
+```
+
+Although conceptually there is an implicit precondition and post-condition containing the conjunction of all of the `cell_like_invariant`s
+added to all functions, they actually don't need to be verified this way.
+Instead, a (possibly empty) subset can be chosen as the additional precondition, and then used as the postcondition and 
+as if it were the additional precondition and postcondition of all the calls it makes.
+`#[pure]` functions don't get any implicit precondition (even conceptually) which allows the to frame regardless of any `cell_like_invariants` that may exist.
+
+The major issue with this strategy is that it dosn't work to create or destroy types with `cell_like_invariants`.
+A better solution would be to desugar `cell_like_invariants` to add an extra (ghost) field to each type to keep track of if it's valid.
+
+```rust
+#[cell_like_invariant(acc(self.ref_count, WRITE) && acc(self.data, WRITE - (*self.ref_count / usize::MAX)))]
+struct HeapRefCell<T> { 
+   ref_count: UnsafeCell<usize>,
+   data: UnsafeCell<T>
+}
+```
+desugars to 
+```rust
+#[cell_like_invariant(acc(self.valid, WRITE/2) && self.valid ==> acc(self.ref_count.ptr(), WRITE) && acc(self.data.ptr(), WRITE - (*self.ref_count.ptr() / usize::MAX)))]
+#[invariant(acc(self.valid, WRITE/2) && self.valid)] // Now this can't be Copy
+struct HeapRefCell<T> { 
+   ref_count: UnsafeCell<usize>,
+   data: UnsafeCell<T>,
+   valid: *bool
+}
+```
+This basically says that if we actually have a `HeapRefCell` then regardless of permission it `cell_like_invariant` holds,
+but if we have data that was/will be part of a `HeapRefCell` then the `cell_like_invariant` may not hold.
+
+In addition to the regular handling of invariants the valid pointer is handled specially
+
+* Before constructing directly
+   * Chose fresh (havoc'ed) valid pointer
+   * Inhale half permission to the valid pointer (the other half already exists in global quantifier)
+   * Set the valid pointer to true (modify the heap so that it isn't know to be true prior to this point)
+   * (don't exhale `cell_like_invariant`, this will already be taken care of now the valid pointer is true)
+* After destructuring directly or dropping
+   * Set the valid pointer to false
+   * Could exhale half permission to the valid pointer for symmetry, but it will never be used again
+* When destructuring a shared reference
+   * N/A
+* At the end of the lifetime of a destructured shared reference
+   * N/A
+* After destructuring a mutable reference
+   * Set the valid pointer to false (this lets us exhale the `cell_like_invariant` which can be useful eg [`Cell::get_mut`](https://doc.rust-lang.org/std/cell/struct.Cell.html#method.get_mut))
+* Right before the end of the lifetime of a destructured mutable reference
+   * Set the valid pointer to true (it seems strange to make a modification at an arbitrary point in the future, but since it's a ghost operation this should be fine?)
+
+#### Rc Example
+```rust
+#[cell_like_invariant(acc(self.count.ptr(), WRITE) && acc(self.owner, WRITE - (*self.count.ptr())/usize::MAX))]
+struct RcBox<T>{
+    count: UnsafeCell<T>,
+    value: T,
+    owner: Ghost<*const RcData<T>>
+}
+
+#[invariant(acc(self.ptr, 1/usize::MAX) && (*ptr).owner == ptr && was_alloced(self.ptr))]
+struct Rc<T> {
+    ptr: *const RcBox<T>
+}
+
+impl<T> Deref for Rc<T> {
+    type Target = T;
+    
+    #[pure]
+    fn deref(&self) -> &T {
+        let ptr = self.ptr;
+        unsafe{&((*ptr).value)}
+    }
+}
+
+impl<T> Rc<T> {
+    #[ensures(*result == value)]
+    #[ensures(*(*result.ptr).count == 1)]
+    fn new(value: T) {
+        let count = UnsafeCell::new(usize::MAX);
+        let rc_box = RcBox{count, value, owner: ghost!(ptr::null())};
+        // in our current system all functions (including Box::{new, into_raw}) requires `cell_like_invariants` hold
+        // this is why we need to initialize count with usize::MAX
+        // in the future we could add an explicit opt out or parametricity
+        let ptr: *const RcBox<T> = Box::into_raw(Box::new(rc_box));
+        unsafe{*(*ptr).owner = ghost!(ptr)}
+        unsafe{*(*ptr).count.as_mut() = 1}
+        Rc{ptr}
+    }
+    
+    fn drop(self) {
+        let Rc{ptr} = self;
+        unsafe{*(*ptr).count.as_mut() = usize::MAX}
+        Box::from_raw(ptr) // now it will get dropped
+    }
+    
+    fn get_mut(&mut self) -> Option<&mut T> {
+        let ptr = self.ptr;
+        if unsafe{*(*ptr).count.as_ref()} != 1 {
+            None
+        } else {
+            // this inhales 1/usize::MAX permission which we can combine the permission in the `cell_like_invariant` to get full permission
+            let RcBox{value, ..} = unsafe{ptr as *mut _ as &mut _};
+            // mutably destructuring rc_box disables the `cell_like_invariant` so we don't need to give permission back at the end of the call
+            Some(value)
+            // after expiry the end of the we'll get back the permission we to re-enable the `cell_like_invariant`
+        }
+    }
+}
+
+impl<T> Clone for Rc<T> {
+    #[ensures(result.deref() == self.deref())]
+    fn clone(&self) -> Self {
+        let ptr = self.ptr;
+        if unsafe{*(*ptr).count.as_ref()} == usize::MAX {
+            panic!()
+        } else {
+            unsafe{*(*ptr).count.as_mut() += 1};
+            Rc{ptr}
+        }
+    }
+}
 ```
