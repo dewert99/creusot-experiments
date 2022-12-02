@@ -1,12 +1,12 @@
 // Inspired by https://plv.mpi-sws.org/rustbelt/ghostcell/ https://rust-unofficial.github.io/too-many-lists/fifth.html
 
-use creusot_contracts::{prusti_prelude::*, logic::*, extern_spec};
-use ::std::cell::UnsafeCell;
-use ::std::marker::PhantomData;
-use ::std::ptr::NonNull;
-use ::std::ptr;
-use ::std::alloc::{dealloc, Layout};
 use crate::p_map::*;
+use creusot_contracts::{extern_spec, logic::*, prusti_prelude::*};
+use std::alloc::{dealloc, Layout};
+use std::cell::UnsafeCell;
+use std::marker::PhantomData;
+use std::ptr;
+use std::ptr::NonNull;
 
 /// Models a fragment of the heap that maps the [`GhostPtr`]s it has permission to their value.
 /// At most one [`GhostToken`] has permission to each [`GhostPtr`]
@@ -15,7 +15,6 @@ pub struct GhostToken<T: ?Sized>(Ghost<PMap<GhostPtr<T>, T>>, PhantomData<T>);
 
 /// Thin wrapper over a raw pointer managed by a [`GhostPtr`]
 pub type GhostPtr<T> = *mut T;
-
 
 impl<T: ?Sized> ShallowModel for GhostToken<T> {
     type ShallowModelTy = PMap<GhostPtr<T>, T>;
@@ -30,7 +29,7 @@ impl<T: ?Sized> GhostToken<T> {
     /// Creates a new [`GhostPtr`] that has no permission
     #[ensures(@result == PMap::empty())]
     pub fn new() -> Self {
-        GhostToken(ghost!(PMap::empty()),PhantomData)
+        GhostToken(ghost!(PMap::empty()), PhantomData)
     }
 
     /// Gain permission to all of the [`GhostPtr`]s managed by other
@@ -41,13 +40,30 @@ impl<T: ?Sized> GhostToken<T> {
     pub fn absorb(&mut self, other: GhostToken<T>) {}
 
     #[trusted]
-    #[law('_, '_, '_)]
-    #[requires((@self).contains(ptr1) && (@self).contains(ptr2))]
-    #[requires(ptr1.addr_logic() == ptr2.addr_logic())]
-    #[ensures(result)]
-    #[ensures(result ==> ptr1 == ptr2)]
-    fn injective_lemma(self, ptr1: GhostPtr<T>, ptr2: GhostPtr<T>) -> bool {
-        absurd
+    #[requires(subset.subset(@self))]
+    #[ensures(@result == **subset)]
+    #[after_expiry((@*result).disjoint(old(@self).subtract(**subset)))]
+    #[after_expiry(@*self == old(@self).subtract(**subset).union(@*result))]
+    pub fn shrink(&mut self, subset: &Ghost<PMap<GhostPtr<T>, T>>) -> &mut Self {
+        self
+    }
+
+    #[trusted]
+    #[ensures(forall<ptr1: GhostPtr<T>, ptr2: GhostPtr<T>>
+        (@self).contains(ptr1) && (@self).contains(ptr2) && ptr1.addr_logic() == ptr2.addr_logic()
+        ==> ptr1 == ptr2)]
+    fn injective_lemma(&self) {}
+
+    #[requires((@self).contains(ptr1) || ptr1 == GhostPtr::null_logic())]
+    #[requires((@self).contains(ptr2) || ptr2 == GhostPtr::null_logic())]
+    #[ensures(result == (ptr1.addr_logic() == ptr2.addr_logic()))]
+    #[ensures(result == (ptr1 == ptr2))]
+    pub fn are_eq(&self, ptr1: GhostPtr<T>, ptr2: GhostPtr<T>) -> bool
+    where
+        T: Sized,
+    {
+        self.injective_lemma();
+        ptr1.addr() == ptr2.addr()
     }
 
     /// Leaks memory iff the precondition fails
@@ -61,13 +77,17 @@ impl<T: ?Sized> GhostPtrExt<T> for GhostPtr<T> {
     #[ensures(!old(@*t).contains(result))]
     #[ensures(@*t == old(@*t).insert(result, val))]
     fn new_in(val: T, t: &mut GhostToken<T>) -> Self
-        where T: Sized {
+    where
+        T: Sized,
+    {
         Self::from_box_in(Box::new(val), t)
     }
 
     #[ensures(@(result.1) == PMap::empty().insert(result.0, val))]
     fn new_pair(val: T) -> (Self, GhostToken<T>)
-        where T: Sized {
+    where
+        T: Sized,
+    {
         let mut t = GhostToken::new();
         (GhostPtr::new_in(val, &mut t), t)
     }
@@ -77,7 +97,9 @@ impl<T: ?Sized> GhostPtrExt<T> for GhostPtr<T> {
     #[trusted]
     #[ensures(result == Self::null_logic())]
     fn null() -> Self
-        where T: Sized {
+    where
+        T: Sized,
+    {
         ptr::null_mut()
     }
 
@@ -87,7 +109,9 @@ impl<T: ?Sized> GhostPtrExt<T> for GhostPtr<T> {
     #[ensures(result == old(@*t).lookup(self))]
     #[ensures(@*t == old(@*t).remove(self))]
     fn take(self, t: &mut GhostToken<T>) -> T
-        where T: Sized {
+    where
+        T: Sized,
+    {
         *self.take_box(t)
     }
 
@@ -104,6 +128,7 @@ impl<T: ?Sized> GhostPtrExt<T> for GhostPtr<T> {
     #[trusted]
     #[logic(() -> '_)]
     #[ensures(forall<t: GhostToken<T>> !(@t).contains(result))]
+    #[ensures(forall<ptr: GhostPtr<T>> ptr.addr_logic() == result.addr_logic() ==> ptr == result)]
     fn null_logic() -> Self {
         absurd
     }
@@ -115,7 +140,7 @@ impl<T: ?Sized> GhostPtrExt<T> for GhostPtr<T> {
     #[requires((@t).contains(self))]
     #[ensures(*result == *(@t).lookup_unsized(self))]
     fn borrow(self, t: &GhostToken<T>) -> &T {
-        unsafe {&*self }
+        unsafe { &*self }
     }
 
     /// Mutably borrows `self` and returns a view of the rest of [`GhostPtrs`] stored in `t`
@@ -129,9 +154,8 @@ impl<T: ?Sized> GhostPtrExt<T> for GhostPtr<T> {
     #[after_expiry('i, @*old(*t) == (@*curr(*t)).insert(self, *result))]
     #[after_expiry('i, !(@*curr(*t)).contains(self))]
     fn reborrow<'o, 'i>(self, t: &'o mut &'i mut GhostToken<T>) -> &'i mut T {
-        unsafe { &mut *self}
+        unsafe { &mut *self }
     }
-    // (self, t: &mut GhostToken<T>) -> (&mut T, &mut GhostToken<T>)
 
     #[trusted] // shouldn't be needed
     #[requires((@*t).contains(self))]
@@ -167,13 +191,17 @@ impl<T: ?Sized> GhostPtrExt<T> for GhostPtr<T> {
 
 pub trait GhostPtrExt<T: ?Sized>: Sized {
     fn new_in(val: T, t: &mut GhostToken<T>) -> Self
-    where T: Sized;
+    where
+        T: Sized;
     fn new_pair(val: T) -> (Self, GhostToken<T>)
-    where T: Sized;
+    where
+        T: Sized;
     fn null() -> Self
-    where T: Sized;
+    where
+        T: Sized;
     fn take(self, t: &mut GhostToken<T>) -> T
-    where T: Sized;
+    where
+        T: Sized;
     fn from_box_in(val: Box<T>, t: &mut GhostToken<T>) -> Self;
     #[logic(() -> '_)]
     fn null_logic() -> Self;
@@ -186,7 +214,7 @@ pub trait GhostPtrExt<T: ?Sized>: Sized {
     fn take_box(self, t: &mut GhostToken<T>) -> Box<T>;
 }
 
-extern_spec!{
+extern_spec! {
     impl<T> *mut T {
         // Safety since addr_logic is uninterpreted this just claims ptr::addr is deterministic
         #[trusted]
@@ -229,7 +257,11 @@ fn test() {
 
 #[requires(token.shallow_model().contains(ptr1))]
 #[requires(token.shallow_model().contains(ptr2))]
-fn test2<T>(token: &mut GhostToken<T>, ptr1: GhostPtr<T>, ptr2: GhostPtr<T>) -> Option<(&mut T, &mut T)> {
+fn test2<T>(
+    token: &mut GhostToken<T>,
+    ptr1: GhostPtr<T>,
+    ptr2: GhostPtr<T>,
+) -> Option<(&mut T, &mut T)> {
     if ptr1.addr() != ptr2.addr() {
         proof_assert!(ptr1 != ptr2);
         proof_assert!((@token).remove(ptr1).get(ptr2) == (@token).get(ptr2));
