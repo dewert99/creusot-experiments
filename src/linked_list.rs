@@ -12,6 +12,8 @@ type Ptr<T> = GhostPtr<Node<T>>;
 type Token<T> = GhostToken<Node<T>>;
 type TokenM<T> = PMap<Ptr<T>, Node<T>>;
 
+
+/// Is there a linked list segment from ptr to other
 #[predicate('_, '_, '_)]
 #[variant(token.len())]
 #[ensures(ptr == other ==> result)]
@@ -27,6 +29,7 @@ fn lseg<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> bool {
     }
 }
 
+/// Returns the minimal subset of `token` such that `lseg(ptr, other, result)`
 #[logic(('x, 'x, 'x) -> 'x)]
 #[variant(token.len())]
 #[requires(lseg(ptr, other, token))]
@@ -43,6 +46,7 @@ fn lseg_basis<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> TokenM<T> {
     }
 }
 
+/// Returns the sequence of elements in the segment from ptr to other
 #[logic(('x, 'x, 'x) -> 'x)]
 #[variant(token.len())]
 #[requires(lseg(ptr, other, token))]
@@ -62,6 +66,7 @@ fn lseg_strict<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> bool {
     lseg(ptr, other, token) && lseg_basis(ptr, other, token).ext_eq(token)
 }
 
+/// Lemma for replacing `token` with a superset
 #[logic(('_, '_, '_, '_) -> '_)]
 #[variant(token1.len())]
 #[requires(lseg(ptr, other, token1))]
@@ -79,6 +84,8 @@ fn lseg_super<T>(ptr: Ptr<T>, other: Ptr<T>, token1: TokenM<T>, token2: TokenM<T
     }
 }
 
+
+/// Lemma for concatenating 2 segments
 #[logic(('_, '_, '_, '_, '_) -> '_)]
 #[variant(token12.len())]
 #[requires(token12.disjoint(token23))]

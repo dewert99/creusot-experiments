@@ -12,6 +12,8 @@ type Ptr<K> = GhostPtr<Node<K>>;
 type Token<K> = GhostToken<Node<K>>;
 type TokenM<K> = PMap<Ptr<K>, Node<K>>;
 
+/// If there is a skip-list segmented at `level` from `ptr` to `end` in `token` returns the subset of `token` that wasn't needed
+/// Otherwise returns None
 #[base_logic]
 #[requires(level >= -1)]
 #[variant(level + token.len())]
@@ -52,6 +54,7 @@ fn lseg_basis<K>(ptr: Ptr<K>, end: Ptr<K>, token: TokenM<K>, level: Int) -> Toke
     token.subtract(unwrap(lseg(ptr, end, token, level)))
 }
 
+/// Lemma for framing `lseg` when using a different `token`
 #[logic(('_, '_, '_, '_, '_) -> '_)]
 #[variant(token1.len() + level + 1)]
 #[requires(level >= -1)]
@@ -88,7 +91,7 @@ fn lseg_super<K>(
     }
 }
 
-
+/// Lemma for modifying the first element of the segment at a high enough level and framing `lseg`
 #[logic(('_, '_, '_, '_, '_) -> '_)]
 #[variant(level + 1)]
 #[requires(level >= -1)]
@@ -114,7 +117,7 @@ fn lseg_swap_first<K>(
     }
 }
 
-
+/// Lemma for concatenating skip lists
 #[logic(('_, '_, '_, '_, '_) -> '_)]
 #[variant(token.len())]
 #[requires(level >= 0)]
@@ -137,7 +140,7 @@ fn lseg_trans<K>(ptr1: Ptr<K>, ptr2: Ptr<K>, ptr3: Ptr<K>, token: TokenM<K>, lev
     }
 }
 
-
+/// Lemma for lowering the level used in `lseg`
 #[logic(('_, '_, '_, '_) -> '_)]
 #[variant(token.len() + level)]
 #[requires(lseg(ptr1, ptr2, token, level) != None)]
@@ -158,6 +161,8 @@ fn lseg_layered<K>(ptr1: Ptr<K>, ptr2: Ptr<K>, token: TokenM<K>, level: Int) -> 
     }
 }
 
+/// Recursive helper
+/// Inserts key between `start` and `end` at `level` giving it height `new_level`
 #[requires(lseg(start, end, @token, @level) != None)]
 #[requires(start != end)]
 #[requires(end == Ptr::null_logic() || unwrap(lseg(start, end, @token, @level)).contains(end))]

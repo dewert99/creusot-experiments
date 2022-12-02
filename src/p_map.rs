@@ -109,6 +109,22 @@ impl<K, V: ?Sized> PMap<K, V> {
         absurd
     }
 
+    #[trusted]
+    #[logic(('x, 'x) -> 'x)]
+    #[ensures(forall<k: K> result.get(k) == if other.contains(k) {None} else {self.get(k)})]
+    pub fn subtract_keys(self, other: Self) -> Self {
+        absurd
+    }
+
+
+    #[logic(('x, 'x) -> 'x)]
+    #[requires(other.subset(self))]
+    #[ensures(result.disjoint(other))]
+    #[ensures(other.union(result).ext_eq(self))]
+    pub fn subtract(self, other: Self) -> Self {
+        self.subtract_keys(other)
+    }
+
     #[logic(('_, '_, '_) -> '_)]
     #[requires(self.contains(k))]
     #[requires(self.disjoint(other))]
