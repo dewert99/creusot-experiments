@@ -2,6 +2,7 @@ use crate::ghost_ptr::*;
 use crate::helpers::unwrap;
 use crate::p_map::PMap;
 use creusot_contracts::{logic as base_logic, prusti_prelude::*};
+use creusot_contracts::__stubs::implication;
 
 pub struct Node<T> {
     pub data: T,
@@ -16,11 +17,11 @@ type TokenM<T> = PMap<Ptr<T>, Node<T>>;
 /// Is there a linked list segment from ptr to other
 #[predicate('_, '_, '_)]
 #[variant(token.len())]
-#[ensures(ptr == other ==> result)]
-#[ensures(token.contains(ptr) && token.lookup(ptr).next == other ==> result)]
+#[ensures(ptr == other ==> result == (token == PMap::empty()))]
+#[ensures(result && ptr != other ==> token.contains(ptr))]
 fn lseg<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> bool {
     if ptr == other {
-        true
+        token == PMap::empty()
     } else {
         match token.get(ptr) {
             None => false,
@@ -29,28 +30,11 @@ fn lseg<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> bool {
     }
 }
 
-/// Returns the minimal subset of `token` such that `lseg(ptr, other, result)`
-#[logic(('x, 'x, 'x) -> 'x)]
-#[variant(token.len())]
-#[requires(lseg(ptr, other, token))]
-#[ensures(result.subset(token))]
-#[ensures(lseg(ptr, other, result))]
-#[ensures(forall<t: TokenM<T>> result.subset(t) ==> lseg(ptr, other, t))]
-#[ensures(ptr == other ==> result == PMap::empty())]
-fn lseg_basis<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> TokenM<T> {
-    if ptr == other {
-        TokenM::empty()
-    } else {
-        let node = token.lookup(ptr);
-        lseg_basis(node.next, other, token.remove(ptr)).insert(ptr, node)
-    }
-}
-
 /// Returns the sequence of elements in the segment from ptr to other
 #[logic(('x, 'x, 'x) -> 'x)]
 #[variant(token.len())]
 #[requires(lseg(ptr, other, token))]
-#[ensures(result.len() == lseg_basis(ptr, other, token).len())]
+#[ensures(result.len() == token.len())]
 #[ensures(ptr == other ==> result == Seq::EMPTY)]
 fn lseg_seq<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> Seq<T> {
     if ptr == other {
@@ -61,28 +45,6 @@ fn lseg_seq<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> Seq<T> {
     }
 }
 
-#[predicate('_, '_, '_)]
-fn lseg_strict<T>(ptr: Ptr<T>, other: Ptr<T>, token: TokenM<T>) -> bool {
-    lseg(ptr, other, token) && lseg_basis(ptr, other, token).ext_eq(token)
-}
-
-/// Lemma for replacing `token` with a superset
-#[logic(('_, '_, '_, '_) -> '_)]
-#[variant(token1.len())]
-#[requires(lseg(ptr, other, token1))]
-#[requires(token1.subset(token2))]
-#[ensures(result)]
-#[ensures(result ==> lseg(ptr, other, token2))]
-#[ensures(result ==> lseg_basis(ptr, other, token1) == lseg_basis(ptr, other, token2))]
-#[ensures(result ==> lseg_seq(ptr, other, token1).ext_eq(lseg_seq(ptr, other, token2)))]
-fn lseg_super<T>(ptr: Ptr<T>, other: Ptr<T>, token1: TokenM<T>, token2: TokenM<T>) -> bool {
-    if ptr != other {
-        let next = token1.lookup(ptr).next;
-        lseg_super(next, other, token1.remove(ptr), token2.remove(ptr))
-    } else {
-        true
-    }
-}
 
 
 /// Lemma for concatenating 2 segments
@@ -93,9 +55,8 @@ fn lseg_super<T>(ptr: Ptr<T>, other: Ptr<T>, token1: TokenM<T>, token2: TokenM<T
 #[requires(lseg(ptr2, ptr3, token23))]
 #[requires(!token12.contains(ptr3))]
 #[ensures(result)]
-#[ensures(result ==> lseg(ptr1, ptr3, token12.union(token23)))]
-#[ensures(result ==> lseg_basis(ptr1, ptr3, token12.union(token23)).ext_eq(lseg_basis(ptr1, ptr2, token12).union(lseg_basis(ptr2, ptr3, token23))))]
-#[ensures(result ==> lseg_seq(ptr1, ptr3, token12.union(token23)).ext_eq(lseg_seq(ptr1, ptr2, token12).concat(lseg_seq(ptr2, ptr3, token23))))]
+#[ensures(lseg(ptr1, ptr3, token12.union(token23)))]
+#[ensures(lseg_seq(ptr1, ptr3, token12.union(token23)).ext_eq(lseg_seq(ptr1, ptr2, token12).concat(lseg_seq(ptr2, ptr3, token23))))]
 // TODO clean up once why3 gets a better discriminate transformation
 fn lseg_trans<T>(
     ptr1: Ptr<T>,
@@ -104,21 +65,14 @@ fn lseg_trans<T>(
     token12: TokenM<T>,
     token23: TokenM<T>,
 ) -> bool {
-    TokenM::<T>::union_remove;
     if ptr1 != ptr2 {
         let Node { data, next } = token12.lookup(ptr1);
         lseg_trans(next, ptr2, ptr3, token12.remove(ptr1), token23)
-            && token12.union(token23).remove(ptr1) == token12.remove(ptr1).union(token23)
-            && lseg_seq(ptr1, ptr2, token12)
-                == Seq::singleton(data).concat(lseg_seq(next, ptr2, token12.remove(ptr1)))
-            && lseg_seq(ptr1, ptr3, token12.union(token23))
-                == Seq::singleton(data).concat(lseg_seq(
-                    next,
-                    ptr3,
-                    token12.union(token23).remove(ptr1),
-                ))
+            && token12.union(token23).remove(ptr1).ext_eq(token12.remove(ptr1).union(token23))
+            && implication(token12.union(token23).remove(ptr1).ext_eq(token12.remove(ptr1).union(token23)), lseg(ptr1, ptr3, token12.union(token23)))
+            && lseg_seq(ptr1, ptr3, token12.union(token23)).ext_eq(lseg_seq(ptr1, ptr2, token12).concat(lseg_seq(ptr2, ptr3, token23)))
     } else {
-        lseg_super(ptr2, ptr3, token23, token12.union(token23))
+        true
     }
 }
 
@@ -135,7 +89,7 @@ impl<T> LinkedList<T> {
         if head == Ptr::null_logic() {
             token.shallow_model().is_empty()
         } else {
-            lseg_strict(head, tail, token.shallow_model().remove(tail))
+            lseg(head, tail, token.shallow_model().remove(tail))
                 && token.shallow_model().contains(tail)
                 && token.shallow_model().lookup(tail).next == Ptr::null_logic()
         }
@@ -205,6 +159,7 @@ impl<T> LinkedList<T> {
         let res = head.take_box(token);
         let next = res.next;
         proof_assert!(next != Ptr::null_logic() ==> token.shallow_model().remove(*tail).ext_eq(old_token.remove(*tail).remove(*head)));
+        proof_assert!(next == Ptr::null_logic() ==> *head == *tail);
         *head = next;
         proof_assert!(next == Ptr::null_logic() ==> self.to_seq().ext_eq(old_self.to_seq().tail()));
         proof_assert!(next != Ptr::null_logic() ==> self.to_seq().ext_eq(old_self.to_seq().tail()));
@@ -455,8 +410,8 @@ impl<'a, T> IterMut<'a, T> {
             proof_assert!((@^*old_token).remove(**curr).ext_eq(@^*token));
             proof_assert!(**curr != *tail ==>
                 (@^*token).remove(*tail).ext_eq((@^*old_token).remove(*tail).remove(**curr)));
-            proof_assert!(**curr != *tail && lseg_strict(^next, *tail, (@^*token).remove(*tail))
-                ==> lseg_strict(**curr, *tail, (@^*old_token).remove(*tail)));
+            proof_assert!(**curr != *tail && lseg(^next, *tail, (@^*token).remove(*tail))
+                ==> lseg(**curr, *tail, (@^*old_token).remove(*tail)));
             *curr = next;
             proof_assert!(self.fut_inv() ==> old_self.fut_inv());
             proof_assert!(**curr != Ptr::null_logic() && old_self.fut_inv() ==>
@@ -493,9 +448,11 @@ impl<'a, T> IterMut<'a, T> {
         let l_tail_node = ghost!(*l_tail_node);
         let good = ghost!(old_l_token.shallow_model().disjoint(token.shallow_model()));
         //proof_assert!(l_head != l_tail);
-        proof_assert!(*good ==> lseg_strict(l_tail, **curr, PMap::empty().insert(l_tail, *l_tail_node)));
+        proof_assert!(PMap::empty().insert(l_tail, *l_tail_node).remove(l_tail).ext_eq(PMap::empty()));
+        proof_assert!(*good ==> lseg(l_tail, **curr, PMap::empty().insert(l_tail, *l_tail_node)));
+        proof_assert!(Seq::singleton(l_tail_node.data).concat(lseg_seq(**curr, **curr, PMap::empty())).ext_eq(Seq::singleton(l_tail_node.data)));
         proof_assert!(*good ==> lseg_seq(l_tail, **curr, PMap::empty().insert(l_tail, *l_tail_node)).ext_eq(Seq::singleton(l_tail_node.data)));
-        //proof_assert!(lseg_strict(l_head, l_tail, old_l_token.shallow_model().remove(l_tail)));
+        //proof_assert!(lseg(l_head, l_tail, old_l_token.shallow_model().remove(l_tail)));
         proof_assert!(old_l_token
             .shallow_model()
             .remove(l_tail)
@@ -509,7 +466,7 @@ impl<'a, T> IterMut<'a, T> {
         proof_assert!(*good ==> lseg_seq(l_head, **curr, l_token.shallow_model()).ext_eq(old_list.to_seq()));
         proof_assert!(*good ==> lseg_trans(l_head, **curr, *tail, l_token.shallow_model(), token.shallow_model().remove(*tail)));
         proof_assert!(*good ==> l_token.shallow_model().union(token.shallow_model().remove(*tail)).ext_eq(token.shallow_model().union(l_token.shallow_model()).remove(*tail)));
-        //proof_assert!(*good ==> lseg_strict(l_head, *tail, token.shallow_model().union(l_token.shallow_model()).remove(*tail)));
+        //proof_assert!(*good ==> lseg(l_head, *tail, token.shallow_model().union(l_token.shallow_model()).remove(*tail)));
         **curr = l_head;
         token.absorb(l_token);
     }
