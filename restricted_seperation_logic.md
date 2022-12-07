@@ -56,8 +56,15 @@ fn ptr_to_ref<'a, X>(x: *const X, p: Perm) -> &'a X {
 ```
 Reading and writing raw pointers can be treated as casting them to a short lived reference,
 and the reading/writing the reference
-`*const` and `*mut` have the same encoding and `*mut` pointers can be freely cast to `*const` pointers
+`*const` and `*mut` have the same encoding and `*mut` pointers can be freely cast to `*const` pointers.
+
+
 Note that `std::ptr::addr_of_mut!(x.f)` and `&mut x.f as *mut _` have different semantics and don't return the same pointer.
+`std::ptr::addr_of_mut!(x.f)` is a pure function that offsets the address of the pointer, such that `acc(x)` implies `acc(std::ptr::addr_of_mut!(x.f))`.
+`&'a mut x.f as *mut _` casts `x` to a mutable reference exhaling its permission, projects it, 
+and then casts it to a pointer with a fresh logical address (fresh provenance) with inhaled permission.  
+When `'a` expires permission to the returned pointer is exhaled and then permission to `x` is inhaled again.
+This forces stacked-borrows to be followed.
 ```rust
 #[requires(acc(x, WRITE))]
 fn test1(x: *mut (u32, u32)) {
@@ -84,17 +91,17 @@ fn test2(x: *mut (u32, u32)) {
 Box functions can also be given specs
 ```rust
 #[opaque]
-fn was_alloced<T>(ptr: *const T) -> bool;
+fn freeable<T>(ptr: *const T) -> bool;
 
 impl Box<T> {
-    #[ensures(acc(result, WRITE) && *result == self.deref() && was_alloced(result))]
+    #[ensures(acc(result, WRITE) && *result == self.deref() && freeable(result))]
     fn into_raw(self) -> *mut T;
 
-    #[requires(acc(result, WRITE) && was_alloced(result))]
+    #[requires(acc(result, WRITE) && freeable(result))]
     fn from_raw(ptr: *mut T) -> Self;
 }
 ```
-We need to include `was_alloced` to prevent:
+We need to include `freeable` to prevent:
 ```rust
 fn bad() {
    let b = Box::new((0, 0));
@@ -130,7 +137,9 @@ Keeping track of physical addresses for references may occasionally be useful (p
 but it could make proofs more expensive.
 We could possibly make it optional, but then we would either have to prevent code using the feature from calling code not using it.
 
-### Parametric Framing Problem
+
+### Heap Dependent Invariants
+#### Parametric Framing Problem
 If we allow for heap dependent type invariants we run into a framing problem
 ```rust
 trait MyTrait {
@@ -171,7 +180,7 @@ fn bad() {
     // r expires but we now have access
 }
 ```
-### Possible Solution
+#### Possible Solution
 Multiply permissions in heap dependent invariants by "surrounding context"
  * Full permission if owned or under mutable reference
  * Arbitrarily small permission if under shared reference
@@ -590,7 +599,7 @@ They potentially could be represented in Viper by threading quantified permissio
 #[cell_like_invariant(acc(self.ref_count, WRITE) && acc(self.data, WRITE - (*self.ref_count / usize::MAX)))]
 // ^~ Needs a better name
 #[derive(Copy, Clone)] // no heap dependent regular invariant
-struct LeakRefCell<T> { // Not worrying about for this example
+struct LeakRefCell<T> { 
    ref_count: *mut usize,
    data: *mut T
 }
@@ -677,7 +686,7 @@ fn drop_ref_mut(r: RefMut) {
 
 Although conceptually there is an implicit precondition and post-condition containing the conjunction of all of the `cell_like_invariant`s
 added to all functions, they actually don't need to be verified this way.
-Instead, a (possibly empty) subset can be chosen as the additional precondition, and then used as the postcondition and 
+Since they are self framing, and independent of parameters, a (possibly empty) subset can be chosen as the additional precondition, and then used as the postcondition and 
 as if it were the additional precondition and postcondition of all the calls it makes.
 `#[pure]` functions don't get any implicit precondition (even conceptually) which allows the to frame regardless of any `cell_like_invariants` that may exist.
 
@@ -686,7 +695,7 @@ A better solution would be to desugar `cell_like_invariants` to add an extra (gh
 
 ```rust
 #[cell_like_invariant(acc(self.ref_count, WRITE) && acc(self.data, WRITE - (*self.ref_count / usize::MAX)))]
-struct HeapRefCell<T> { 
+struct RefCell<T> { 
    ref_count: UnsafeCell<usize>,
    data: UnsafeCell<T>
 }
@@ -695,7 +704,7 @@ desugars to
 ```rust
 #[cell_like_invariant(acc(self.valid, WRITE/2) && self.valid ==> acc(self.ref_count.ptr(), WRITE) && acc(self.data.ptr(), WRITE - (*self.ref_count.ptr() / usize::MAX)))]
 #[invariant(acc(self.valid, WRITE/2) && self.valid)] // Now this can't be Copy
-struct HeapRefCell<T> { 
+struct RefCell<T> { 
    ref_count: UnsafeCell<usize>,
    data: UnsafeCell<T>,
    valid: *bool
@@ -755,7 +764,7 @@ impl<T> Rc<T> {
         let rc_box = RcBox{count, value, owner: ghost!(ptr::null())};
         // in our current system all functions (including Box::{new, into_raw}) requires `cell_like_invariants` hold
         // this is why we need to initialize count with usize::MAX
-        // in the future we could add an explicit opt out or parametricity
+        // in the future we could add an explicit opt out or use parametricity
         let ptr: *const RcBox<T> = Box::into_raw(Box::new(rc_box));
         unsafe{*(*ptr).owner = ghost!(ptr)}
         unsafe{*(*ptr).count.as_mut() = 1}
@@ -764,8 +773,10 @@ impl<T> Rc<T> {
     
     fn drop(self) {
         let Rc{ptr} = self;
-        unsafe{*(*ptr).count.as_mut() = usize::MAX}
-        Box::from_raw(ptr) // now it will get dropped
+        if unsafe{*(*ptr).count.as_ref()} == 1 {
+            unsafe{*(*ptr).count.as_mut() = usize::MAX}
+            Box::from_raw(ptr) // now it will get dropped
+        }
     }
     
     fn get_mut(&mut self) -> Option<&mut T> {
