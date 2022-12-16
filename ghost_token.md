@@ -1,7 +1,13 @@
-`GhostPtrToken` is a ZST that models the ownership of a collection of pointers
-which allows for types with aliasing pointers to verified using existing tools.
-It is modeled by a finite partial map that maps pointers that it owns to their values on the heap.
-Currently, it enforces that all the pointers it manages are free-able by the global allocator.
+### Motivation
+
+Safe Rust relies on an aliasing XOR mutability discipline where mutable references are not allowed to alias with any other reference. This works well for tree shaped data structures but makes it harder to work with data structure with a more general graph shaped (eg. doubly linked lists, skip lists, etc.). Rust has certain safe built in types that allow programmers to work around this restriction by allowing controlled mutation to shared references of these types, but they often involve runtime overhead. The alternative strategy for creating graph like data structure is to use raw pointers (which can freely alias) and unsafe Rust, but current Rust verification tools don't currently support verifying these types of unsafe operations.
+
+### `GhostPtrToken`
+
+`GhostPtrToken` is a ZST that models the ownership of a collection of raw pointers.
+It's specifications are proven in the Rust-Horn-Belt/lambda-rust Coq formalization (THIS STILL NEEDS TO BE DONE!) and can then be used to verify more complex programs using existing tools (Prusti or Creusot).
+It is modelled as a finite partial map that maps pointers that it owns to their values on the heap. It supports operations that allow the pointers to be temporarily upgraded to shared or mutable references, but it's specification enforce that it doesn't allow for a mutable reference to alias another reference.
+Currently, it enforces that all the pointers it manages are free-able by the global allocator. This allows it to support reasoning about memory-management as well as aliasing (a raw pointer managed by a `GhostPtrToken` can replace a `Rc<RefCell<_>>`), giving it an advantage over `GhostCell` which would still require handling this at runtime (eg. with reference counting using `Rc`).
 
 the API looks something like:
 ```rust
@@ -49,10 +55,12 @@ the API looks something like:
 ## Examples using `GhostPtrToken`
 
 ### [`LinkedList`](src/linked_list.rs)
-A fairly simple singly linked list with a tail pointer, with `enqueue`, `dequeue`, `append`, and `iter_mut`.
+A common example of a graph shaped data structure is a singly linked list using a tail pointer, which supports `enqueue`, `dequeue`, `append`, and `iter_mut` operations.
 
+Using separation logic it could be modelled using invariants like:
 
-The `LinkedList` type and invariant looks something like
+(Note `∗` is the separating conjunction)
+
 ```rust
 struct Node<T>{
     data: T,
@@ -61,6 +69,39 @@ struct Node<T>{
 
 type Ptr<T> = *mut Node<T>;
 type Token<T> = GhostToken<Node<T>>;
+type TokenM<T> = PMap<Ptr<T>, Node<T>>;
+
+#[predicate]
+#[variant(token.len())]
+#[ensures(ptr == other ==> result)]
+#[ensures(token.contains(ptr) && token.lookup(ptr).next == other ==> result)]
+fn lseg<T>(ptr: Ptr<T>, other: Ptr<T>) -> bool {
+    ptr == other || (acc(ptr) ∗ lseg(ptr.next, other))
+}
+
+pub struct LinkedList<T>{
+    head: Ptr<T>,
+    tail: Ptr<T>,
+}
+
+#[predicate]
+pub fn invariant<T>(this: LinkedList<T>) -> bool {
+    let LinkedList{head, tail} = this;
+    head == ptr::null() || (lseg(head, tail) ∗ acc(tail) ∗ tail.next == ptr::null())
+}
+```
+
+This separation logic can be extracted by adding a `GhostPtrToken` to the `LinkedList` struct to model the fragment of the heap used in it's invariant. The `lseg` predicate is given an extra parameter representing the fragment of the heap it's allowed to use.
+The calls are passed reduced version of the token to mimic the separating conjunction separating out some of the permission. `lseg` also requires that the token is empty in the base case to help show we are not leaking memory.
+
+```rust
+struct Node<T>{
+    data: T,
+    next: Ptr<T>,
+}
+
+type Ptr<T> = *mut Node<T>;
+type Token<T> = GhostPtrToken<Node<T>>;
 type TokenM<T> = PMap<Ptr<T>, Node<T>>;
 
 #[predicate]
@@ -93,21 +134,31 @@ pub fn invariant<T>(this: LinkedList<T>) -> bool {
 ```
 
 
-Note that the `lseg` predicate corresponds roughly to the separation logic predicate:
-`ptr == other || (acc(ptr) * lseg(ptr.next, other))`,
-but interactions with the heap are managed though the token's model.
-The recursive call is passed a reduced version of the token to mimic the separating conjunction.
-It also requires that the token is empty in the base case to help show we are not leaking memory.
-
-The fact that predicate only makes one call (or more generally that it only makes tail calls) simplifies things
-since we don't need to specifically describe its footprint
-
 ### [`SkipList`](src/skip_list.rs)
-A simple single threaded skip list with a tail pointer.
+Another example of a graph shaped data structure is a skip list.
 
-Currently, it only has a recursive helper for insert implemented but is designed to support `iter_mut` as well
+Unfortunately since `GhostPtrToken`s don't help model concurrency this example will not support concurrent operations. 
 
-Since it involves two recursive call, the type invariant helper is somewhat messier
+Using separation logic the recursive helper for the invariant could be modelled like:
+
+```rust
+fn lseg<K>(ptr: Ptr<K>, end: Ptr<K>, level: Int) -> bool {
+	if ptr == end {
+		true
+	} else if level == -1 {
+		acc(ptr)
+	} else {
+		acc(ptr) && (
+			((@ptr.nexts).len() > level && (@ptr.nexts)[level] != ptr)
+			∗ lseg(ptr, (@ptr.nexts)[level], level - 1)
+			∗ lseg((@ptr.nexts)[level], end, level)
+		)
+	}
+}
+```
+
+Since it involves two separated recursive call, the extracting the separation logic is somewhat messier. In this case `lseg` returns (a representation of) the remaining portion of the heap that it didn't end up using. This way it can require the second recursive call is valid using only what's left of the token after the first call. While this works it requires extra lemmas to prove the framing of the first recursive call when it's part of the token doesn't change. One advantage of this over a tool like Prusti is it can easily deal with the non-separating conjunction by not removing ptr from token in the future calls.
+
 ```rust
 fn lseg<K>(ptr: Ptr<K>, end: Ptr<K>, token: TokenM<K>, level: Int) -> Option<TokenM<K>> {
     if ptr == end {
@@ -135,25 +186,3 @@ fn lseg<K>(ptr: Ptr<K>, end: Ptr<K>, token: TokenM<K>, level: Int) -> Option<Tok
     }
 }
 ```
-
-This should roughly correspond to the separation logic predicate
-```
-if ptr == end {
-    true
-} else if level == -1 {
-    acc(ptr)
-} else {
-    acc(ptr) && (
-        ((@ptr.nexts).len() > level) && (@ptr.nexts)[level] != ptr)
-        * lseg(ptr, (@ptr.nexts)[level], level - 1)
-        * lseg((@ptr.nexts)[level], end, level)
-    )
-}
-```
-
-`lseg` returns the part of the token it didn't use in order to deal with the separating conjunction of two recursive calls.
-This way it can require the second recursive call is valid in what's left of the token after the first call.
-
-While this works it requires extra lemmas to prove the framing of the first recursive call when it's part of the token doesn't change.
-
-One advantage of this over a tool like Prusti is it can easily deal with the non-separating conjunction by not removing ptr from token in the future calls.
