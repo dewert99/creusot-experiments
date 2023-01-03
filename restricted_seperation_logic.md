@@ -1,7 +1,92 @@
 ## Combining Separation Logic and Prophetic encoding
 
+### Creusot Prophecy Encoding
+Creusot models a mutable reference as a pair of its _current_ and _final_ values.  Mutably borrowing X creates a mutable reference with a _current_ value matching the value being borrowed and an undefined _final_ value, and sets X to have a new value matching this _final_ value. Updating a mutable reference changes its current value but leaves its final value the same, and when its lifetime ends the current and final value are assumed to match.
 
-Basic idea is to always use partial snapshots, up to raw pointers (or UnsafeCell), for types.
+#### Examples
+```rust
+fn prophecy_example_before() {
+    let mut x = 0;
+    let m = &mut x;
+    *m += 5;
+    *m += 5;
+    // lifetime ends
+    assert!(x == 10)
+}
+```
+
+```rust
+struct MutRef<T>{cur: T, fin: T}
+
+fn prophecy_example_after() {
+    let mut x = 0;
+    let mut m = MutRef{cur: x, fin: havoc()}; x = m.fin;
+    m = MutRef{cur: m.curr+5, fin: m.fin};
+    m = MutRef{cur: m.curr+5, fin: m.fin};
+    assume!(m.cur == m.fin);
+    assert!(x == 10)
+}
+```
+
+```rust
+fn prophecy_example2_before() {
+    let mut x = 0;
+    let m = &mut x;
+    foo(m); // ensures fin(m) == cur(m) + 5
+    m += 5;
+    // lifetime ends
+    assert!(x == 10)
+}
+```
+
+```rust
+fn prophecy_example2_desugared() {
+    let mut x = 0;
+    let m = &mut x;
+    { 
+        let m2 = &mut *m;
+        foo(m2) // ensures fin(m2) == cur(m2) + 5
+    } //~^ Desugared reborrow
+    m += 5;
+    // lifetime ends
+    assert!(x == 10)
+}
+```
+
+```rust
+struct MutRef<T>{cur: T, fin: T}
+
+fn prophecy_example2_after() {
+    let mut x = 0;
+    let m = MutRef{cur: x, fin: havoc()}; x = m.fin;
+    {
+        let m2 = MutRef{cur: m.cur, fin: havoc()}; m.cur = m2.fin; 
+        foo(m2) // ensures m2.fin == m2.cur + 5
+    }
+    m.cur += 5;
+    // lifetime ends
+    assume!(x == m.cur);
+    assert!(x == 10)
+}
+```
+
+## Motivation
+
+### Vs Creusot
+
+Safe Rust relies on an aliasing XOR mutability discipline where mutable references are not allowed to alias with any other reference. This works well for tree shaped data structures but makes it harder to work with data structure with a more general graph shaped (eg. doubly linked lists, skip lists, etc.). Rust has certain safe built in types that allow programmers to work around this restriction by allowing controlled mutation to shared references of these types, but they often involve runtime overhead. The alternative strategy for creating graph like data structure is to use raw pointers (which can freely alias) in unsafe Rust. Verifying programs using pointers that freely alias, is typically done using separation logic, but Creusot doesn't support this.  Although it's technique of using a prophecy encoding for mutable references has been proven sound in the presence of unsafe Rust, new algorithms directly using raw pointers must be verified manually in Coq. 
+
+
+### Vs Creusot + GhostPtrToken
+Even though it is possible to verify a flexible library for working with raw pointers in Creusot using Coq, having direct access to separation logic can be more convenient. For example, when trying to verify existing code using the library would require adding additional parameters through the code while direct separation logic would only require adding the specifications.  Direct separation logic may also lend itself better to future extensions such as modeling interior mutability.
+
+#### Vs Prusti
+
+Prusti uses a different verification technique, using separation logic directly, interpreting (possibly mutable) references as raw pointers and adding implicit specification to functions that they are used the way the Rust type system forces them to be used.  This is useful because it makes it easy to support raw pointers directly in the same system, but also causes its own issues.  Re-verifying properties guaranteed by the compiler, causes Prusti to have worse performance. Prusti also currently doesn't support certain patterns of using mutable references in safe Rust (for example structs containing mutable references), whereas Creusot's prophecy encoding is complete for safe Rust. Additionally, Prusti doesn't have a connection to the lambda-rust Coq formalization, so it doesn't benefit as much when lambda-rust is extended to verify new unsafe libraries, or capture more details of Rust semantics (eg. weak-memory, stacked-borrows). 
+
+## ???
+
+The basic idea is to always use partial snapshots, up to raw pointers (or UnsafeCell), for types.
 The snapshot of a shared reference becomes the underlying type and the snapshot of a mutable reference is a prophetic pair.
 Shared and mutable occupy a single heap location which corresponds to their snapshot.
 
