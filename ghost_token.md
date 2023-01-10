@@ -10,20 +10,22 @@ It is modelled as a finite partial map that maps pointers that it owns to their 
 
 
 ### Vs `GhostCell`
-Currently, `GhostPtrToken` enforces that all the pointers it manages are free-able by the global allocator. This allows it to support reasoning about memory-management as well as aliasing (a raw pointer `*mut _` managed by a `GhostPtrToken` can replace a `Rc<RefCell<_>>`). This gives it an advantage over `GhostCell` which would still require handling this at runtime (eg. with reference counting using `Rc<GhostCell<_>>`).  For example a linked-list with a tail pointer implemented using `GhostCell` might look like:
+Currently, `GhostPtrToken` enforces that all the pointers it manages are free-able by the global allocator. This allows it to support reasoning about memory-management as well as aliasing, which can give it an advantage over `GhostCell` which would need a separate memory-management strategy. For example a linked-list with a tail pointer implemented using `GhostCell` wound need to look like (where `???` provides an indirection and handles memory management): 
 ```rust
 struct LinkedList<'brand, T>{
 	token: GhostToken<'brand>,
-	head: Option<Rc<GhostCell<'brand, Node<T>>>>,
-	tail: Option<Rc<GhostCell<'brand, Node<T>>>>,
+	head: Option<???<GhostCell<'brand, Node<T>>>>,
+	tail: Option<???<GhostCell<'brand, Node<T>>>>,
 }
 
 struct Node<'brand, T> {
 	data: T,
-	next: Option<Rc<GhostCell<'brand, Node<T>>>>,
+	next: Option<???<GhostCell<'brand, Node<T>>>>,
 }
 ```
-which would still require the overhead of using reference counting, where one using `GhostPtrToken` would look like.
+The common ways of doing this in Rust are to use `Box<GhostCell>` `(A)Rc<GhostCell>` or `&GhostCell`. `Box<GhostCell>` doesn't work for this case at all since it doesn't allow aliasing. `(A)Rc<GhostCell>` would work fairly well but comes with a runtime overhead.  `&GhostCell` doesn't require this overhead but forces all the data in the data-structure have the same lifetime (get freed at the same time) which forces using an arena allocator (this is what is done in the paper).
+
+Using `GhostPtrToken` the linked-list example would look like.
 ```rust
 struct LinkedList<T>{
 	token: GhostPtrToken<T>,
@@ -36,7 +38,9 @@ struct Node<'brand, T> {
 	next: *mut Node<T>,
 }
 ```
-which would be just as efficient as what could be created using only raw pointers. Since `GhostCell` wasn't designed for verification, using it may be easier since contracts and invariants are not needed, but it doesn't guarantee functional correctness properties (only memory safety).
+which would be just as efficient as what could be created using only raw pointers. 
+
+Since `GhostCell` wasn't designed for verification, using it may be easier since contracts and invariants are not needed, but it doesn't guarantee functional correctness properties (only memory safety).
 
 ### Operations
 
